@@ -334,6 +334,14 @@ class LimitsConfig:
     #: or a batch over the solves that proved something — and a failed
     #: distillation never blocks the close.
     distill_on_confirm: bool = False
+    #: How long confirming a flag waits for an in-flight verifier before the
+    #: close proceeds anyway. Used to be the workflow's biggest hole: confirm
+    #: closed the run under the auto-dispatched verifier and the independent
+    #: gate died at zero turns — 15 of 30 verifiers in the live database, one
+    #: of them 42 seconds before its reproduction completed. A refuted verdict
+    #: during the wait stops the confirm entirely; a timeout lets it proceed
+    #: and the verifier outlives the close, its verdict still recorded.
+    confirm_verifier_wait_s: int = 90
     task_timeout_s: int = 1800
     #: How many times the *same* tool call may be repeated before a worker is
     #: stopped. 0 disables it.
@@ -615,6 +623,10 @@ writeup_on_confirm = false
 # 笔记是「越用越强」的另一半（卡记题目、笔记记方法），随时可补：
 # 运行页的「沉淀笔记」按钮，或 ctfagent distill <run_id>。赛后批量做更划算。
 distill_on_confirm = false
+# 确认 flag 时若有验证器还在独立复核，确认动作最多等这么久（秒）：
+# 复核驳回则中止确认（不会把错答案送上平台）；超时则照常确认，
+# 验证器活到关闭之后，结论仍会记到 flag 上。设 0 可完全跳过等待。
+confirm_verifier_wait_s = 90
 task_timeout_s = 1800
 stall_timeout_s = 300
 # Silence while a tool runs is not a hang; this clock is longer on purpose.

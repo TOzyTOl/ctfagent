@@ -175,6 +175,16 @@ _DIRECTIONS = tuple(r for r in ROLES if r not in ("triage", "verifier", "writer"
 #: penalise the next challenge that shares that direction.
 MIN_DIRECTION_TURNS = 10
 
+#: A run that has emitted no event of any kind for this long is a zombie —
+#: every live session produces events constantly, so the silence itself is
+#: the diagnosis. Longer than the lead's own stall clock (900 s) because the
+#: reaper is the backstop for the case where those clocks did not fire.
+_ZOMBIE_SILENCE_S = 1200
+
+#: The closing turn after a time ceiling goes through the possibly-hung lead
+#: client; it gets this long before the close proceeds without it.
+_CEILING_SUMMARY_TIMEOUT_S = 240
+
 #: How triage states its conclusion. The prompt asks for ``category=<cat>`` as
 #: the first finding; live runs have also written ``category=crypto：…`` (CJK
 #: punctuation straight after the token) and put the answer only in the Chinese
@@ -508,6 +518,11 @@ class Run:
         self._question_future: asyncio.Future[str] | None = None
         self._question_text = ""
         self._started = time.time()
+        #: Wall-clock timestamp of the last event this run emitted, any kind.
+        #: The watchdog's silence check reads it: a run that has produced
+        #: nothing for many minutes is a zombie even when its own task tree
+        #: believes it is alive.
+        self._last_event_ts = time.time()
         self._closed = False
         #: Text already streamed in the current turn, so the final ``result``
         #: message is not appended twice and the UI can tell a streamed reply
@@ -589,6 +604,7 @@ class Run:
         }
 
     def _emit(self, kind: str, payload: dict[str, Any], task_id: int | None = None) -> None:
+        self._last_event_ts = time.time()
         self.bus.publish(self.id, kind, payload, task_id=task_id)
 
     # -------------------------------------------------------------- lifecycle
@@ -1130,7 +1146,11 @@ class Run:
                 "然后调用 finish_run，status 用 failed 或 needs_input。"
             )
             await self._stream(session, text, task_id=None, role="main")
-        except Exception:  # noqa: BLE001 - best effort; the run ends either way
+        except BaseException:  # noqa: BLE001 - best effort; the run ends either way
+            # BaseException on purpose: the bounded timeout cancels this turn
+            # and the cancellation surfaces here as CancelledError, which an
+            # `except Exception` would re-raise straight through the watchdog
+            # (run 82's close died exactly there, inside a hung client).
             pass
 
     def _priced_cost(self, event: AgentEvent, task_id: int | None, role: str) -> float | None:
@@ -3015,6 +3035,21 @@ class Run:
             "refuted": FlagStatus.REJECTED,
             "inconclusive": FlagStatus.CANDIDATE,
         }[verdict]
+        if flag.status == FlagStatus.CONFIRMED and new_status == FlagStatus.VERIFIED:
+            # The operator confirmed while the verifier was still running and
+            # the close let this verdict land afterwards. Verification cannot
+            # downgrade a human decision — the status stays confirmed and the
+            # verdict is recorded as the note it is.
+            self.store.set_flag_status(
+                flag.id, FlagStatus.CONFIRMED, note=f"确认后复核通过（任务 #{task_id}）"
+            )
+            self._emit(
+                "flag.verdict",
+                {"flag_id": flag.id, "value": flag.value, "verdict": verdict,
+                 "status": str(FlagStatus.CONFIRMED), "task_id": task_id},
+                task_id=task_id,
+            )
+            return
         self.store.set_flag_status(flag.id, new_status, note=f"验证任务 #{task_id}：{verdict}")
         self._emit(
             "flag.verdict",
@@ -3095,10 +3130,21 @@ class Run:
         writer is dispatched *before* the run closes and granted a post-stop
         exemption. Closing first and then dispatching would leave the writer
         queued behind a stopped run (or cancelled by the shutdown sweep).
+
+        When a verifier is still reviewing the flag, the confirm waits for it
+        (bounded by ``limits.confirm_verifier_wait_s``). Used to be the single
+        biggest hole in the workflow: the operator confirmed, the run closed
+        under the in-flight verifier, and the independent-reproduction gate
+        died at zero turns — 15 of 30 verifiers in the live database, one of
+        them 42 seconds before its reproduction completed (run 81). A refuted
+        verdict stops the confirm; a timeout lets it proceed and the verifier
+        outlives the close with its verdict still recorded.
         """
         flag = self.store.get_flag(flag_id)
         if flag is None or flag.run_id != self.id:
             raise ValueError(f"运行 {self.id} 里没有 flag {flag_id}")
+        if not await self._confirm_wait_for_verifier(flag):
+            return
         self.store.set_flag_status(flag_id, FlagStatus.CONFIRMED, note=note or "操作员确认")
         self._emit("flag.confirmed", {"flag_id": flag_id, "value": flag.value})
         summary = f"flag 已确认：{flag.value}"
@@ -3127,6 +3173,44 @@ class Run:
         self._collect_writeup()
         await self._maybe_distill_on_confirm()
         await self.shutdown(RunStatus.SOLVED, summary, "操作员确认 flag")
+
+    async def _confirm_wait_for_verifier(self, flag: Any) -> bool:
+        """Hold the confirm while a verifier is still reviewing, then decide.
+
+        Returns False only when the verdict that arrived during the wait
+        refuted the flag: confirming a value the independent reviewer just
+        disproved would send a wrong answer to the platform. Any other
+        outcome proceeds — and a verifier still running when the bounded
+        wait expires is exempted from the shutdown sweep, so its verdict is
+        recorded on the flag even though the run has closed.
+        """
+        in_flight = [
+            t for t in self.store.list_tasks(self.id)
+            if t.role == "verifier" and not t.terminal
+        ]
+        if not in_flight:
+            return True
+        wait_s = self.cfg.limits.confirm_verifier_wait_s
+        self._emit(
+            "flag.confirm_pending",
+            {"flag_id": flag.id, "value": flag.value,
+             "verifier_ids": [t.id for t in in_flight], "wait_s": wait_s,
+             "note": f"验证器仍在独立复核，确认动作最多等待 {wait_s} 秒"},
+        )
+        await self.wait([t.id for t in in_flight], timeout_s=wait_s)
+        current = self.store.get_flag(flag.id)
+        if current is not None and current.status == FlagStatus.REJECTED:
+            self._emit(
+                "flag.confirm_refuted",
+                {"flag_id": flag.id, "value": flag.value,
+                 "note": "确认被验证器驳回：独立复核推翻了该候选，flag 已标为 rejected，"
+                         "运行保持打开。确认这是误报可再次确认。"},
+            )
+            return False
+        for t in self.store.list_tasks(self.id):
+            if t.role == "verifier" and not t.terminal:
+                self._post_stop_ok.add(t.id)
+        return True
 
     async def _maybe_distill_on_confirm(self) -> None:
         """Distil a technique note, if the operator turned that on.
@@ -3420,43 +3504,81 @@ class Run:
 
     # --------------------------------------------------------------- watchdog
     async def _budget_watchdog(self) -> None:
+        while not self._stop.is_set():
+            await asyncio.sleep(2)
+            try:
+                if await self._watchdog_tick():
+                    return
+            except Exception:  # noqa: BLE001 - the watchdog must outlive bugs
+                continue
+
+    async def _watchdog_tick(self) -> bool:
+        """One watchdog pass. Returns True when this tick closed the run.
+
+        Split from the loop so the checks are testable without waiting on
+        real timers. Order matters: silence is checked before the ceilings,
+        because a run whose event stream has gone dead must be reaped even
+        while its own clocks believe everything is fine — observed live on
+        run 82, which sat ``running`` for half a day with a silent session
+        while every per-run clock failed to fire.
+        """
         limits = self.cfg.limits
+        if self._stop.is_set() or self._finish_status:
+            return False
         #: Where new ground stops being worth opening. Cost only moves when a
         #: session emits its result, so the run can gain several dollars between
         #: two polls; the soft stop makes that last jump the end of exploration
         #: rather than the thing that blows through the ceiling.
         soft_ceiling = limits.run_budget_usd * 0.85
-        while not self._stop.is_set():
-            await asyncio.sleep(2)
-            if self._stop.is_set() or self._finish_status:
-                continue
-            if not self._soft_stopped and self.cost_usd > soft_ceiling:
-                self._soft_stopped = True
-                self._emit(
-                    "run.budget_soft",
-                    {
-                        "cost_usd": round(self.cost_usd, 2),
-                        "run_budget_usd": limits.run_budget_usd,
-                        "message": "接近预算上限：停止派发新的探索工单，在跑的收尾",
-                    },
-                )
-            reason = ""
-            dollar_ceiling = False
-            if self.elapsed > limits.run_timeout_s:
-                reason = f"运行超过 {limits.run_timeout_s} 秒上限"
-            elif self.cost_usd > limits.run_budget_usd:
-                reason = f"运行超过 ${limits.run_budget_usd:.2f} 预算"
-                dollar_ceiling = True
-            if not reason:
-                continue
-            # Stop new work, let the lead account for itself, then close.
-            # A dollar ceiling gets no extra turn: the session is already over
-            # budget and another turn is spent, not saved.
+        if not self._soft_stopped and self.cost_usd > soft_ceiling:
+            self._soft_stopped = True
+            self._emit(
+                "run.budget_soft",
+                {
+                    "cost_usd": round(self.cost_usd, 2),
+                    "run_budget_usd": limits.run_budget_usd,
+                    "message": "接近预算上限：停止派发新的探索工单，在跑的收尾",
+                },
+            )
+        # The zombie reaper. A run that has emitted nothing for this long is
+        # dead regardless of what its loop thinks — the ceiling path below
+        # tries to give the lead a closing turn through a client that may be
+        # the very thing that is hung, so silence skips it entirely.
+        if time.time() - self._last_event_ts > _ZOMBIE_SILENCE_S:
             self._accepting = False
-            if self._main_client is not None and not dollar_ceiling:
-                await self._summarize_after_ceiling(self._main_client)
-            await self.shutdown(RunStatus.FAILED, reason, "预算或时间用尽")
-            return
+            await self.shutdown(
+                RunStatus.FAILED,
+                "事件流长时间静默，看门狗强制关闭",
+                "看门狗:事件静默",
+            )
+            return True
+        reason = ""
+        dollar_ceiling = False
+        if self.elapsed > limits.run_timeout_s:
+            reason = f"运行超过 {limits.run_timeout_s} 秒上限"
+        elif self.cost_usd > limits.run_budget_usd:
+            reason = f"运行超过 ${limits.run_budget_usd:.2f} 预算"
+            dollar_ceiling = True
+        if not reason:
+            return False
+        # Stop new work, let the lead account for itself, then close.
+        # A dollar ceiling gets no extra turn: the session is already over
+        # budget and another turn is spent, not saved.
+        # The closing turn is bounded: it goes through the very client that
+        # may be hung (run 82's watchdog hung here for half a day inside an
+        # unbounded stream on a dead session), so it must never be trusted
+        # with the close.
+        self._accepting = False
+        if self._main_client is not None and not dollar_ceiling:
+            try:
+                await asyncio.wait_for(
+                    self._summarize_after_ceiling(self._main_client),
+                    timeout=_CEILING_SUMMARY_TIMEOUT_S,
+                )
+            except Exception:  # noqa: BLE001 - a summary is best effort
+                pass
+        await self.shutdown(RunStatus.FAILED, reason, "预算或时间用尽")
+        return True
 
 
 class RunManager:

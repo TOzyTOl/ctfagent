@@ -135,6 +135,7 @@
     "fact.added": "黑板记录", "fact.merged": "重复记录已合并",
     "fact.downgraded": "证据不足已降级", "flag.proposed": "提交候选",
     "flag.verdict": "验证结论", "flag.confirmed": "flag 确认",
+    "flag.confirm_pending": "等待验证复核", "flag.confirm_refuted": "确认被驳回",
     "challenge.categorized": "题目分类", "challenge.renamed": "题目更名",
     "chat.user": "对话", "main.message": "主 agent", "main.interrupted": "已打断",
     "agent.event": "代理", "session.error": "会话出错",
