@@ -1,0 +1,16 @@
+name: data-go-brrrrr
+category: forensics
+description: |
+  DEADFACE CTF 2026 · 网络取证。
+
+  Our client wants to know what is happening on their network. Data is leaving
+  the network and they have limited it down to a small segment of traffic. Can
+  you find the flag associated with the data being exfiltrated?
+
+  Submit the flag as deadface{flag_text}.
+flag_format: "deadface\\{[^}]+\\}"
+source: materials
+time_limit_s: 1800
+hints:
+  - 抓包里心跳流量占了绝大多数，先分清哪些包是"正常噪声"
+  - 看协议、看包长、看两个主机的对答节奏

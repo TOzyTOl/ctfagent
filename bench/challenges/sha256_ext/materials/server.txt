@@ -1,0 +1,12 @@
+内网 API 网关的会话校验机制如下：
+
+  mac = SHA-256( secret || message )
+
+secret 是 16 字节的未知密钥，只参与拼接、不做任何变换。
+一次抓包拿到的有效请求：
+
+  message = user=guest
+  mac     = dfb922c1a9b3e86d72736c060f4916b2b5a34c8eb40870db908cf34614d5e32b
+
+目标：把 message 追加字节 ';role=admin' 得到新 message，在不掌握 secret 的前提下给出新 message 对应的合法 mac。
+提交 64 位十六进制 mac（可带 flag{} 包装）。

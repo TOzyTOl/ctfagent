@@ -1,0 +1,8 @@
+name: ooops
+category: reverse
+description: |
+  A large binary whose logic is obfuscated Python bytecode. Work out what it
+  checks and what it prints.
+flag_format: "flag\\{[^}]+\\}"
+source: D:\agentsec\ctf_ooops
+time_limit_s: 3600

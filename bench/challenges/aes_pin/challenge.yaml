@@ -1,0 +1,10 @@
+name: aes_pin
+category: crypto
+description: |
+  从一台保险库的固件升级包里提取出一段校验固件和一段密文。厂商的实现很省事：
+  主密钥 = MD5(6 位数字 PIN 的 ASCII 字节) 的 16 字节摘要，AES-128-ECB 加密，
+  PKCS#7 填充。PIN 是 000000–999999 之间的一个 6 位数字。
+  恢复密文开头的明文，那就是 flag。
+flag_format: "flag\\{[^}]+\\}"
+source: materials
+time_limit_s: 1500

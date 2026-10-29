@@ -1,0 +1,181 @@
+{% extends "base.html" %}
+{% block title %}对话 · CTFAGENT{% endblock %}
+
+{% block body %}
+<div class="ws ws-home">
+  {# ---- same rail as the workspace, so switching is always one click --------- #}
+  <aside class="rail">
+    <a class="rail-new on" href="/new">＋ 新任务</a>
+    {% if folder_id %}
+    {% set here = folders | selectattr("id", "equalto", folder_id) | first %}
+    {% if here %}
+    <div class="rail-here">正在往「{{ here.name }}」里加任务</div>
+    {% endif %}
+    {% endif %}
+    {# Folders were added because the rail grows by one row per attempt and the
+       operator thinks in competitions, not in run ids. Creating one here is the
+       shortest path: name it, and the composer below is already pointed at it. #}
+    <form method="post" action="/api/folders" class="rail-new-folder">
+      <input type="hidden" name="redirect" value="/new">
+      <input name="name" placeholder="新建文件夹（比赛/练习）" required maxlength="60">
+      <button type="submit" title="创建一个文件夹">＋</button>
+    </form>
+    <div class="rail-list" id="rail-list" data-active="0">
+      {% include "_rail.html" %}
+    </div>
+    <div class="rail-foot">
+      <span><b>{{ counts.total }}</b> 个任务</span>
+      {% if folder_id %}
+      {% set here = folders | selectattr("id", "equalto", folder_id) | first %}
+      {% if here %}
+      <form method="post" action="/api/folders/{{ here.id }}/rename" class="rail-foot-rename">
+        <input name="name" value="{{ here.name }}" maxlength="60" required
+               title="改名后回车">
+      </form>
+      <form method="post" action="/api/folders/{{ here.id }}/delete" class="rail-foot-del"
+            onsubmit="return confirm('删除文件夹「{{ here.name }}」？里面的任务不会删，会回到「未分类」。')">
+        <button type="submit" title="删除这个文件夹（不删任务）">删除文件夹</button>
+      </form>
+      {% endif %}
+      {% endif %}
+    </div>
+  </aside>
+
+  <main class="home" id="main" tabindex="-1">
+    <div class="home-scroll" id="home-scroll">
+      <div class="home-inner">
+        {% if error %}<div class="banner bad">{{ error }}</div>{% endif %}
+        {% if notice %}<div class="banner ok">{{ notice }}</div>{% endif %}
+        <h1>今天解哪道题？</h1>
+        <p class="lede">
+          把题目原文贴进来就行，附件可以直接拖到页面里。第一条消息会开一个工作台，
+          主 agent 在那里读题、分派，你可以继续和它聊。
+        </p>
+
+        <div class="home-examples">
+          <button type="button" class="example" data-fill="silentrotor (crypto)&#10;我们截获了一段密文，rotor 机每次转动 3 格，请恢复明文。&#10;flag 格式 flag{...}">
+            <span class="ex-k">crypto</span>
+            <span class="ex-t">贴一段密文题目</span>
+          </button>
+          <button type="button" class="example" data-fill="web&#10;目标：http://10.0.0.5:8080&#10;提示：登录页有个 search 参数，flag 在管理员面板。">
+            <span class="ex-k">web</span>
+            <span class="ex-t">给一个目标地址</span>
+          </button>
+          <button type="button" class="example" data-fill="帮我看一下 attachments/ 里的文件是什么类型，先别急着解题。">
+            <span class="ex-k">misc</span>
+            <span class="ex-t">先聊两句再决定</span>
+          </button>
+        </div>
+
+        <details class="home-more">
+          <summary>已有题目目录？直接登记</summary>
+          <form method="post" action="/api/challenges" class="row" style="margin-top:10px">
+            <input name="directory" placeholder="D:\agentsec\ctf_n17" required>
+            <button type="submit">登记</button>
+          </form>
+          <div class="side-note" style="margin-top:8px">
+            目录里放 <code>challenge.yaml</code>；附件会复制到工作区，原目录不改动。登记后在左侧列表点「开跑」。
+          </div>
+          {% if challenges %}
+          <div class="challenge-list">
+            {% for c in challenges %}
+            <div class="row" style="justify-content:space-between; padding:9px 0; border-bottom:1px solid var(--rule-soft)">
+              <div>
+                <div style="font-size:13.5px">{{ c.name }}</div>
+                <div class="mono faint">#{{ c.id }} · {{ c.category | role_label }}</div>
+              </div>
+              <div style="display:flex; gap:6px; align-items:center">
+                <form method="post" action="/api/runs">
+                  <input type="hidden" name="challenge_id" value="{{ c.id }}">
+                  {% if folder_id %}<input type="hidden" name="folder_id" value="{{ folder_id }}">{% endif %}
+                  <button class="small" type="submit">开跑</button>
+                </form>
+                <form method="post" action="/api/challenges/{{ c.id }}/delete"
+                      onsubmit="return confirm('从列表里移除「{{ c.name }}」？附件原目录不动，已有运行记录会阻止删除。')">
+                  <button class="danger small" type="submit" title="移除这道题">移除</button>
+                </form>
+              </div>
+            </div>
+            {% endfor %}
+          </div>
+          {% endif %}
+        </details>
+      </div>
+    </div>
+
+    <form method="post" action="/api/tasks" enctype="multipart/form-data"
+          class="composer home-composer" id="compose-form">
+      <div class="composer-box">
+        <textarea name="description" rows="3" required
+                  placeholder="贴题目、给目标地址，或者先说说你想做什么…"></textarea>
+        <div class="composer-bar">
+          <label class="attach" title="附带文件（也可以直接拖进页面）">
+            <input type="file" name="files" id="files" multiple>
+            <span>＋ 附件</span>
+          </label>
+          {# Which folder this run lands in. Arriving from a folder (the rail's
+             ＋) preselects it; arriving normally preselects 未分类, so a run is
+             never filed under whatever row happened to be open. #}
+          <label class="folder-pick" title="把这个任务放进哪个文件夹">
+            <span>文件夹</span>
+            <select name="folder_id">
+              <option value="" {% if not folder_id %}selected{% endif %}>未分类</option>
+              {% for f in folders %}
+              <option value="{{ f.id }}" {% if folder_id == f.id %}selected{% endif %}>{{ f.name }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <span class="chosen" id="chosen"></span>
+          <span class="composer-keys" title="Enter 发送，Shift+Enter 换行"><kbd>Enter</kbd> 发送</span>
+          <button class="primary" type="submit" id="compose-submit">发送</button>
+        </div>
+      </div>
+      <div class="composer-drop" id="composer-drop" hidden></div>
+
+      <details class="compose-extra">
+        <summary>补充字段（可选）</summary>
+        <div class="grid-2">
+          <div class="field">
+            <label for="title">题目名</label>
+            <input id="title" name="title" placeholder="留空则取第一行">
+          </div>
+          <div class="field">
+            <label for="category">方向</label>
+            <select id="category" name="category">
+              <option value="">自动判断</option>
+              <option value="web">web</option>
+              <option value="crypto">crypto</option>
+              <option value="pwn">pwn</option>
+              <option value="reverse">reverse</option>
+              <option value="misc">misc</option>
+              <option value="forensics">forensics</option>
+              <option value="malware">malware</option>
+              <option value="ai_ml">ai_ml</option>
+              <option value="osint">osint</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="remote">远程地址</label>
+            <input id="remote" name="remote" placeholder="nc host port / http://…">
+          </div>
+          <div class="field">
+            <label for="flag_format">flag 格式</label>
+            <input id="flag_format" name="flag_format" placeholder="flag{...}">
+          </div>
+        </div>
+        <div class="field" style="margin-top:10px">
+          <label for="objective">目标</label>
+          <input id="objective" name="objective" placeholder="留空则默认：解出题目并找到 flag">
+        </div>
+      </details>
+      <span class="faint mono" id="compose-state"></span>
+    </form>
+    <div class="drop-veil" id="drop-veil" hidden><span>松手即可附上文件</span></div>
+  </main>
+</div>
+<div id="toast"></div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/compose.js"></script>
+{% endblock %}

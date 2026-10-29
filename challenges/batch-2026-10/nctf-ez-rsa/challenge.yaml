@@ -1,0 +1,13 @@
+name: Ez_RSA
+category: crypto
+description: |
+  NCTF 2026（2026-04-04）。
+
+  EEEEEzzzzz RRRRRSSSSSAAAAA !!!!!
+
+  task.py 末尾以注释形式给出了这一轮实例的 n / e / c / hint 实际值。
+flag_format: "nctf\{[^}]+\}"
+source: materials
+time_limit_s: 1800
+hints:
+  - hint 泄露的是 p 与「q 的比特倒序」的异或结果

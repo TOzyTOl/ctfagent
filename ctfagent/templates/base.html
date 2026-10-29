@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}CTFAGENT{% endblock %}</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23ffffff'/%3E%3Cpath d='M3 4h10v2H3zm0 3h6v2H3zm0 3h10v2H3z' fill='%2314181b'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+{# First in the document and first in the tab order: the rail is ~90 links on a
+   busy day, and a keyboard user should not have to walk it to reach the page
+   they came for. It is off-screen until focused, then it lands where the eye
+   already is. #}
+<a class="skip-link" href="#main">跳到正文</a>
+<div class="frame">
+  <header class="topbar">
+    <a class="brand" href="/">
+      <span class="mark" aria-hidden="true"></span>
+      <span class="word">CTFAGENT</span>
+    </a>
+
+    <div class="chips">
+      <span class="chip" title="执行环境">
+        <span class="k">沙箱</span>
+        <span class="v {% if sandbox.available %}ok{% elif sandbox.mode == 'docker' %}bad{% endif %}">
+          {{ sandbox.mode if sandbox.mode != 'none' else '宿主机' }}{% if sandbox.mode == 'docker' and not sandbox.available %}（不可用）{% endif %}
+        </span>
+      </span>
+      <span class="chip" title="并发会话">
+        <span class="k">会话</span>
+        <span class="v"><span id="session-count">{{ sessions_active }}</span>/{{ cfg.limits.max_sessions }}</span>
+      </span>
+      <a class="chip" href="/settings" title="模型端点 · 点此修改">
+        <span class="k">端点</span>
+        <span class="v mono">{{ (cfg.models.base_url or 'CLI 默认') | replace('http://', '') | replace('https://', '') }}</span>
+      </a>
+    </div>
+
+    <nav class="topnav">
+      <a href="/new" class="{% if page == 'new' %}on{% endif %}">新任务</a>
+      <a href="/" class="{% if page in ('workspace', 'index') %}on{% endif %}">工作台</a>
+      <a href="/competitions" class="{% if page == 'competitions' %}on{% endif %}">比赛</a>
+      <a href="/settings" class="{% if page == 'settings' %}on{% endif %}">凭据</a>
+      <a href="/docs" class="{% if page == 'docs' %}on{% endif %}">说明</a>
+    </nav>
+
+    {# The palette is one keystroke away, but a shortcut nobody can see is a
+       shortcut nobody uses: the chip is the discovery surface, and it is also
+       the pointer path for anyone who does not want to learn a key. #}
+    <button class="palette-open" id="palette-open" type="button"
+            title="跳到任意任务、页面或动作" aria-keyshortcuts="Control+K">
+      <span>跳转</span>
+      <kbd class="palette-open-key">Ctrl</kbd><kbd>K</kbd>
+    </button>
+  </header>
+
+  {% set stale = code_staleness() %}
+  {% if stale %}<div class="banner bad stale-banner">{{ stale }}</div>{% endif %}
+
+  {% block body %}{% endblock %}
+</div>
+
+{# The keyboard surface. It is in every page because the fastest path to any
+   task, from anywhere, should not be "go to the workbench and find the row".
+   Rendered empty and filled by app.js from /api/runs: the server has no reason
+   to know about a palette. #}
+<div class="palette" id="palette" hidden role="dialog" aria-modal="true"
+     aria-label="命令面板">
+  <div class="palette-box">
+    <div class="palette-top">
+      <span class="palette-caret" aria-hidden="true"></span>
+      <input class="palette-input" id="palette-input" type="text"
+             role="combobox" aria-expanded="true" aria-controls="palette-list"
+             aria-autocomplete="list" aria-label="搜索任务、页面或动作"
+             placeholder="跳到任务 · 页面 · 动作" autocomplete="off"
+             spellcheck="false">
+    </div>
+    <ul class="palette-list" id="palette-list" role="listbox"
+        aria-label="搜索结果"></ul>
+    <div class="palette-foot" aria-hidden="true">
+      <span><kbd>↑</kbd><kbd>↓</kbd> 选择</span>
+      <span><kbd>Enter</kbd> 执行</span>
+      <span><kbd>Esc</kbd> 关闭</span>
+      <span class="palette-count" id="palette-count"></span>
+    </div>
+  </div>
+</div>
+{# The page that fills the gap between leaving one page and arriving at the
+   next. It sits outside `.frame` on purpose: the frame fades out underneath it,
+   and a veil nested inside would be dragged down with it. Shown by app.js on a
+   nav click and left up until the next document paints. #}
+<div class="load-veil" id="load-veil" hidden aria-hidden="true">
+  {# Two layers of the same drawing: the globe turns under the bear, and the
+     whole card bobs. Both keep the source canvas so they stack exactly; with
+     animations off (reduced motion) they recompose into the original picture. #}
+  <div class="load-mascot">
+    <img class="mascot-globe" src="/static/mascot-globe.png" alt="">
+    <img class="mascot-top" src="/static/mascot-top.png" alt="">
+  </div>
+  <p class="load-text">loading<i>.</i><i>.</i><i>.</i></p>
+</div>
+<script src="/static/app.js"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

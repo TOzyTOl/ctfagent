@@ -1,0 +1,15 @@
+name: sparse-change
+category: crypto
+description: |
+  Cryovault 2026 Quals（2026-10-10）。
+
+  The machine went to scrap. All we recovered was 48 numbers off its
+  sweep log.
+
+  chall.py 里的 load_flag() 兜底值 b"isfcr{REDACTED}" 是占位符，不是答案；
+  真正的 flag 在 output.json 的 flag_ct 里。
+flag_format: "isfcr\{(?!REDACTED\})[^}]+\}"
+source: materials
+time_limit_s: 3600
+hints:
+  - 项数远少于取值个数，这是稀疏插值问题

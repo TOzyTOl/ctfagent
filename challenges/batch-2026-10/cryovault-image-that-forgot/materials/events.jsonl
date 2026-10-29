@@ -1,0 +1,27 @@
+{"action": "activate", "event_id": "deploy-340e554620", "node": "node-085864", "platform": "linux/arm/v7", "ref": "intake:stable", "service_id": "intake-ad7617fddd", "time": "2026-08-14T03:42:29.396Z"}
+{"digest": "sha256:b2b4a31b8fd9b3d57e4aacb73da126e1b516c580942e4330c390562c4791af29", "tag": "dispatch:stable", "time_ms": 1786678605457}
+{"action": "activate", "event_id": "deploy-96e8ea44e4", "ref": "dispatch:stable", "service_id": "dispatch-ac1af5608a", "time": "2026-08-14T09:26:28.933+05:30"}
+{"digest": "sha256:1e6f1acb63734a7aa5517033359313700b712a6b586710fb5af38a2de21f295d", "tag": "dispatch:stable", "time_ms": 1786681886759}
+{"action": "activate", "event_id": "deploy-20c4f4a72a", "ref": "sha256:2911a8b164a01dd15eeda51145c080bd4c2795b7d5e11adfeac0a55e61e8e6e8", "service_id": "relay-39afa23a71", "time": "2026-08-14T09:52:27.976+05:30"}
+{"action": "restart", "event_id": "deploy-95064e80eb", "service_id": "relay-39afa23a71", "time": "2026-08-14T10:24:46.006+05:45"}
+{"action": "activate", "event_id": "deploy-a7b14df87f", "ref": "intake:stable", "service_id": "intake-ad7617fddd", "time": "2026-08-14T09:37:37.702+05:30"}
+{"digest": "sha256:101c6a48f4f73f4cd3124cabfe62240144656a5dfeec43c99bc50280bda0cd8e", "tag": "relay:canary", "time_ms": 1786678657489}
+{"action": "activate", "event_id": "deploy-b0daaeeb4a", "ref": "intake:stable", "service_id": "intake-ad7617fddd", "status": "failed", "time": "2026-08-14T01:09:21.220-03:30"}
+{"action": "restart", "event_id": "deploy-3c62515105", "service_id": "dispatch-ac1af5608a", "time": "2026-08-14T05:41:54.053+01:00"}
+{"action": "migrate", "event_id": "deploy-1938e9d286", "node": "node-217572", "platform": "linux/arm64/v8", "service_id": "intake-ad7617fddd", "time": "2026-08-14T05:22:53.617+01:00"}
+{"action": "activate", "event_id": "deploy-2a6188dcfe", "node": "node-c10be1", "platform": "linux/amd64", "ref": "sha256:101c6a48f4f73f4cd3124cabfe62240144656a5dfeec43c99bc50280bda0cd8e", "service_id": "relay-39afa23a71", "time": "2026-08-14T09:29:32.224+05:45"}
+{"action": "activate", "event_id": "deploy-ac1c2df5f4", "ref": "sha256:1e6f1acb63734a7aa5517033359313700b712a6b586710fb5af38a2de21f295d", "service_id": "dispatch-ac1af5608a", "status": "failed", "time": "2026-08-13T21:38:01.936-07:00"}
+{"action": "rollback", "event_id": "deploy-81aa644580", "service_id": "dispatch-ac1af5608a", "time": "2026-08-13T23:25:54.376-05:00"}
+{"digest": "sha256:6dae20c68ea334e1ab8742dfac59f415e7b9382dc26e0645e8c81e2465a1ccde", "tag": "dispatch:stable", "time_ms": 1786680967622}
+{"action": "restart", "event_id": "deploy-dad596ad25", "service_id": "relay-39afa23a71", "time": "2026-08-13T23:27:50.023-05:00"}
+{"digest": "sha256:8cf457ad8d3afb36947ea61490aaf51a2ba45cd2f43f1ba7ad14526ebbfe7087", "tag": "intake:stable", "time_ms": 1786678699349}
+{"action": "activate", "event_id": "deploy-6d1373b389", "ref": "dispatch:stable", "service_id": "dispatch-ac1af5608a", "time": "2026-08-14T09:46:07.672+05:30"}
+{"digest": "sha256:d47794389d3c0bf93b1ef0395cc63f51ab0b44166ca79e16af4a2c86bcdae1f7", "tag": "relay:canary", "time_ms": 1786681194081}
+{"action": "activate", "event_id": "deploy-ed789bd9a3", "ref": "dispatch:stable", "service_id": "dispatch-ac1af5608a", "time": "2026-08-14T04:45:19.119Z"}
+{"action": "activate", "event_id": "deploy-cda2bd86ed", "node": "node-217572", "platform": "linux/arm64/v8", "ref": "dispatch:stable", "service_id": "dispatch-ac1af5608a", "time": "2026-08-14T12:41:00.968+09:00"}
+{"action": "activate", "event_id": "deploy-a19996566f", "ref": "sha256:6dae20c68ea334e1ab8742dfac59f415e7b9382dc26e0645e8c81e2465a1ccde", "service_id": "dispatch-ac1af5608a", "status": "failed", "time": "2026-08-14T00:36:35.963-03:30"}
+{"digest": "sha256:392d61274a72a7fd057589bc446c0037b852d87f9fff325e8751c92622032423", "tag": "intake:stable", "time_ms": 1786680457739}
+{"digest": "sha256:30062144e4a7cfc95730fe76cfe8d3a9ccb20434dfee8d8c55c8e7349227981a", "tag": "dispatch:stable", "time_ms": 1786679788858}
+{"action": "migrate", "event_id": "deploy-9d1a1fd93d", "node": "node-3dfc02", "platform": "linux/amd64", "service_id": "dispatch-ac1af5608a", "time": "2026-08-14T13:36:41.756+09:00"}
+{"action": "rollback", "event_id": "deploy-8e3eacd64d", "service_id": "intake-ad7617fddd", "time": "2026-08-14T10:12:32.296+05:30"}
+{"action": "migrate", "event_id": "deploy-f5f19eb71e", "node": "node-085864", "platform": "linux/arm/v7", "service_id": "relay-39afa23a71", "time": "2026-08-13T23:48:07.656-05:00"}

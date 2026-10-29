@@ -1,0 +1,58 @@
+{# The run header's action row. Rendered by the page and by
+   /api/runs/{id}/fragments, because confirming a flag adds the 写报告 and
+   沉淀笔记 buttons: swapping the flag list in place while leaving this row
+   stale would hide the action the confirm was for. #}
+{% set st = run.status %}
+{% if st == "running" %}<span class="stamp st-running">运行中</span>
+{% elif st == "needs_input" %}<span class="stamp st-paused">待确认</span>
+{% elif st == "solved" %}<span class="stamp st-solved">已解出</span>
+{% elif st == "failed" %}<span class="stamp st-failed">失败</span>
+{% elif st == "stopped" %}<span class="stamp st-stopped">已停止</span>
+{% elif st == "interrupted" %}<span class="stamp st-interrupted">中断</span>
+{% else %}<span class="stamp st-queued">排队</span>{% endif %}
+{# Distilled: the run taught the skill library a method. This is the one
+   outcome of a run that lives outside it, so it is stamped here and in
+   the rail rather than only being visible in the event log. #}
+{% if run_notes %}
+<span class="stamp st-note" title="{{ run_notes | map(attribute='path') | join(' · ') }}">已沉淀 {{ run_notes|length }}</span>
+{% endif %}
+<span class="mono faint">${{ "%.3f"|format(run.cost_usd) }}</span>
+{% if st in ("running", "needs_input", "queued") %}
+<form method="post" action="/api/runs/{{ run.id }}/stop"
+      onsubmit="return confirm('停止这次运行？进行中的任务会被取消。')">
+  <button class="danger small" type="submit">停止</button>
+</form>
+{% endif %}
+{# Confirming a flag no longer writes the report: in a competition the
+   next challenge matters more. It stays one click away, here. #}
+{% if confirmed_flag and not writeup_exists %}
+<form method="post" action="/api/runs/{{ run.id }}/writeup">
+  <button class="small" type="submit">写报告</button>
+</form>
+{% endif %}
+{# The other half of memory: the card remembers this challenge, the note
+   remembers the method. Only a confirmed flag earns one. #}
+{% if confirmed_flag %}
+<form method="post" action="/api/runs/{{ run.id }}/distill"
+      onsubmit="return confirm('让 writer 把这次的解法蒸馏成一篇技能笔记？会起一个会话。')">
+  <button class="small" type="submit">{% if run_notes %}重新沉淀{% else %}沉淀笔记{% endif %}</button>
+</form>
+{% endif %}
+{# Filing is a display concern, so it sits with the other per-run
+   controls but does not need a confirm: moving a run changes no data. #}
+<form method="post" action="/api/runs/{{ run.id }}/folder" class="folder-move">
+  <select name="folder_id" onchange="this.form.submit()"
+          title="把这个运行放进哪个文件夹（只改归类，不动记录）">
+    <option value="" {% if not run.folder_id %}selected{% endif %}>未分类</option>
+    {% for f in folders %}
+    <option value="{{ f.id }}" {% if run.folder_id == f.id %}selected{% endif %}>{{ f.name }}</option>
+    {% endfor %}
+  </select>
+</form>
+{# Delete is the row's only irreversible action, so it confirms in two steps:
+   the first click arms the button in place (its own label names what a stray
+   click would cost), the second — within a few seconds — submits. #}
+<form method="post" action="/api/runs/{{ run.id }}/delete" class="delete-run">
+  <button class="danger small" type="submit"
+          data-arm="确认删除 #{{ run.id }}">删除</button>
+</form>

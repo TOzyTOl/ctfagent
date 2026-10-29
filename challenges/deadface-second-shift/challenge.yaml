@@ -1,0 +1,22 @@
+name: second-shift
+category: crypto
+description: |
+  DEADFACE CTF 2026 · 密码学。
+
+  ZeroTrace recovered several files from a DEADFACE relay server shortly before
+  the host went offline. The relay appears to have been used by mort1cia to
+  exchange operational messages with other DEADFACE members.
+
+  One routine transmission was preserved both before and after processing by the
+  relay. A second outbound transmission was recovered only in its processed form.
+
+  Determine what DEADFACE was preparing to do next and recover the flag.
+
+  Submit the flag as deadface{flag-text}.
+# 题面要求小写提交，但归档里还原出的是大写 DEADFACE{...}，两种都收。
+flag_format: "(?i)deadface\\{[^}]+\\}"
+source: materials
+time_limit_s: 1800
+hints:
+  - 同一条消息的明文和密文都在手上，说明密钥流可以直接还原
+  - 两条密文共用了同一套处理方式

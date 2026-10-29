@@ -1,0 +1,283 @@
+{% extends "base.html" %}
+{% block title %}{{ challenge.name if challenge else "工作台" }} · CTFAGENT{% endblock %}
+
+{% block body %}
+<div class="ws" id="run-root" data-run-id="{{ run.id }}"
+     data-last-event="{{ events[-1].id if events else 0 }}">
+  {# ---- the multi-task window: every run, one click to switch ---------------- #}
+  <aside class="rail">
+    <a class="rail-new" href="/new">＋ 新任务</a>
+    <div class="rail-list" id="rail-list" data-active="{{ run.id }}">
+      {% include "_rail.html" %}
+    </div>
+    <div class="rail-foot">
+      <span><b>{{ counts.captured }}</b> 已捕获</span>
+      <span><b>{{ counts.active }}</b> 进行中</span>
+      <span class="mono">${{ "%.2f"|format(counts.cost) }}</span>
+    </div>
+  </aside>
+
+  {# ---- the conversation ---------------------------------------------------- #}
+  <main class="ws-main" id="main" tabindex="-1">
+    <header class="ws-head">
+      <div class="ws-title">
+        <h1>{{ challenge.name if challenge else "?" }}</h1>
+        {# Each fact is its own nowrap span; the separator between them is drawn
+           by CSS. A run's identity line is the one place the operator checks
+           "which job is this and how long has it been going", so a narrow sheet
+           must cost a line break, never a truncated duration. #}
+        <div class="sub mono">
+          <span>#{{ run.id }}</span>
+          {% if challenge and challenge.category and challenge.category != "unknown" %}<span>{{ challenge.category | role_label }}</span>{% endif %}
+          {% if challenge and challenge.remote %}<span>{{ challenge.remote }}</span>{% endif %}
+          {% set began = run.started_at or run.created_at %}
+          {% if began %}
+          <span title="{{ run.started_at | span(run.finished_at) if run.started_at else '还没开始' }}">{% if run.started_at %}开始于{% else %}创建于{% endif %} {{ began | clock }}</span>
+          {% if run.started_at %}
+          <span>已用 <span data-elapsed-from="{{ run.started_at }}" data-elapsed-to="{{ run.finished_at }}" title="{{ run.started_at | span(run.finished_at) }}">{{ seconds_between(run.started_at, run.finished_at) | duration }}</span></span>
+          {% endif %}
+          {% endif %}
+        </div>
+      </div>
+      <div class="ws-actions" id="run-actions">
+        {% include "_run_actions.html" %}
+      </div>
+    </header>
+
+    {% if out_of_budget %}
+    <div class="notice ws-notice">
+      这次运行已经用尽预算（已花 ${{ "%.2f"|format(run.cost_usd) }} / ${{ "%.2f"|format(cfg.limits.run_budget_usd) }}），
+      不能继续对话：恢复会话只会再发一次请求，然后被预算看门狗立刻关掉。请新开一次运行，
+      或在 <span class="mono">config.toml</span> 里调高 <span class="mono">limits.run_budget_usd</span>。
+      下面的记录、工作区和产物仍然可以查看。
+    </div>
+    {% elif detached %}
+    <div class="notice ws-notice">
+      {% if notice and notice != "detached" %}{{ notice }}{% else %}
+      这个运行没有留下主 agent 会话（进程在它开始前就退出了），只能查看结果和确认 flag，不能继续对话。
+      {% endif %}
+    </div>
+    {% elif notice %}
+    <div class="notice ws-notice">{{ notice }}</div>
+    {% endif %}
+    {% if not detached and not out_of_budget and run.status not in ("running", "needs_input", "queued") %}
+    {# The one fact an ended run must state — "sending a message resumes it" —
+       used to squat on the first line of the conversation forever. Slimmed to
+       one quiet line the operator can dismiss for this run. #}
+    <div class="notice ws-notice slim" id="ended-notice" data-run-id="{{ run.id }}">
+      <span>这次运行已经结束。发消息会恢复主 agent 会话，从原来的对话继续。</span>
+      <button type="button" class="notice-x" id="notice-dismiss" title="收起这条提示">知道了</button>
+    </div>
+    {% endif %}
+
+    <div class="ws-tabs">
+      <button class="tab on" data-mtab="chat">对话</button>
+      <button class="tab" data-mtab="report">报告{% if writeup_exists %} ·{% endif %}</button>
+      <span class="ws-tabs-note mono">主 agent 只负责分派与汇总；解题由各方向执行者完成</span>
+    </div>
+
+    <section class="pane pane-chat" data-mpane="chat">
+      <div class="messages" id="messages">
+        {% for m in messages %}
+        <div class="msg {{ m.role }}">
+          <div class="who">{{ "你" if m.role == "user" else "主 agent" }}</div>
+          {# The agent's turns are Markdown and are rendered here by the same
+             rules the live stream uses (``app.js renderMarkdown`` ↔
+             ``ctfagent/mdrender.py``). Printing the raw text made a message
+             change shape on reload: the streamed copy was formatted, the stored
+             one showed literal ``##`` and fences in a single run-on paragraph.
+             The operator's own words stay verbatim. #}
+          {% if m.content %}<div class="body{% if m.role == 'assistant' %} md{% endif %}">{% if m.role == 'assistant' %}{{ m.content | markdown }}{% else %}{{ m.content }}{% endif %}</div>{% endif %}
+          {% if m.attachments %}
+          <div class="msg-files">
+            {% for name in m.attachments %}
+            <a class="file-card" href="/api/runs/{{ run.id }}/attachments/{{ name|urlencode }}"
+               title="{{ name }}">
+              <span class="fc-name">{{ name }}</span>
+              <span class="fc-kind">{{ name.rsplit('.', 1)[-1]|lower if '.' in name else '文件' }}</span>
+            </a>
+            {% endfor %}
+          </div>
+          {% endif %}
+        </div>
+        {% endfor %}
+        {% if not messages %}
+        <div class="empty" id="chat-empty">
+          把题目贴给主 agent，或者直接说你想先打哪个方向。它会把活派给对应方向的执行者。
+        </div>
+        {% endif %}
+        <div class="msg assistant streaming" id="stream-bubble" hidden>
+          <div class="who">主 agent<span class="caret">▍</span></div>
+          <div class="body md" id="stream-body"></div>
+        </div>
+      </div>
+
+      {# A long run buries the newest message far above the composer. Scrolling
+         back down by dragging a hairline scrollbar is the thing that made the
+         chat feel unmanageable, so offer one tap instead. Hidden unless the
+         reader is actually scrolled away from the bottom. #}
+      <button class="to-latest" id="to-latest" type="button" hidden>↓ 最新</button>
+
+      {# The lead's reasoning, streamed as it is written. Folded to one line
+         until the operator opens it: worth watching while it happens, not
+         worth pushing the answer off the screen. The backlog is seeded from
+         the events the page already rendered, so a reload keeps the recent
+         thinking instead of starting from an empty box. #}
+      {% set think = namespace(turns=[]) %}
+      {% for e in events if e.kind == 'agent.event'
+            and e.payload.get('role') == 'main'
+            and e.payload.get('kind') == 'thinking'
+            and e.payload.get('text') %}
+        {% set think.turns = think.turns + [e.payload.get('text')] %}
+      {% endfor %}
+      {% set think.shown = think.turns[-40:] %}
+      <div class="think-panel" id="think-panel"{% if not think.shown %} hidden{% endif %}>
+        <button class="think-head" id="think-toggle" type="button"
+                aria-expanded="false" aria-controls="think-body"
+                title="展开或收起主 agent 的思考过程">
+          <span class="think-caret" aria-hidden="true">▸</span>
+          <span class="think-title">思考</span>
+          <span class="think-count" id="think-count">{{ think.shown|length }} 段</span>
+          <span class="think-preview" id="think-preview"></span>
+        </button>
+        <div class="think-body" id="think-body" hidden>{% for text in think.shown %}<div class="think-turn">{{ text }}</div>{% endfor %}</div>
+      </div>
+
+      {# What the workers are doing right now. The lead can be silent for a
+         long stretch while they run, and an empty chat pane reads as a dead
+         run; this strip is fed by the workers' own tool events. #}
+      <div class="live-strip" id="live-strip" hidden></div>
+
+      <form method="post" action="/api/runs/{{ run.id }}/chat" class="composer"
+            enctype="multipart/form-data" id="composer">
+        <div class="composer-box">
+          <textarea name="text" rows="2" placeholder="{% if out_of_budget %}这次运行预算已用尽，不能再继续对话{% else %}对主 agent 说点什么，或继续补充线索…{% endif %}"
+                    {% if detached or out_of_budget %}disabled{% endif %}></textarea>
+          <div class="composer-bar">
+            <label class="attach" title="附带文件（也可以直接拖进页面）">
+              <input type="file" name="files" multiple {% if detached or out_of_budget %}disabled{% endif %}>
+              <span>＋ 附件</span>
+            </label>
+            <span class="chosen" id="chosen"></span>
+            {# The key hint lives beside the button that Enter does the job of, not
+               inside the placeholder: a placeholder disappears on the first
+               keystroke, which is exactly when the operator is deciding whether
+               Enter or Shift+Enter is the one that sends. #}
+            <span class="composer-keys" title="Enter 发送，Shift+Enter 换行">
+              <kbd>Enter</kbd> 发送
+            </span>
+            <button class="primary" type="submit" {% if detached or out_of_budget %}disabled{% endif %}>发送</button>
+          </div>
+        </div>
+      </form>
+
+      <div class="attach-strip" id="attach-strip"
+           data-run-id="{{ run.id }}"></div>
+      <div class="drop-veil" id="drop-veil" hidden><span>松手即可加入这次对话</span></div>
+    </section>
+
+    <section class="pane pane-report" data-mpane="report" hidden>
+      <div class="writeup-empty" id="writeup-empty">确认 flag 之后，报告撰写者会在这里生成报告。</div>
+      <article class="writeup" id="writeup-body" data-run-id="{{ run.id }}"
+               data-exists="{{ 1 if writeup_exists else 0 }}" hidden></article>
+    </section>
+  </main>
+
+  {# ---- work products ------------------------------------------------------- #}
+  <aside class="ws-side">
+    <div class="side-tabs">
+      <button class="tab on" data-stab="tasks">工单 <span class="n">{{ tasks | length }}</span></button>
+      <button class="tab" data-stab="flags">Flag <span class="n">{{ flags | length }}</span></button>
+      <button class="tab" data-stab="facts">黑板 <span class="n">{{ facts | length }}</span></button>
+      <button class="tab" data-stab="log">日志</button>
+    </div>
+
+    <div class="side-panes">
+      <section class="spane" data-spane="tasks">
+        {% if tasks %}
+        <div class="tasks">
+          {% for t in tasks %}
+          {% set began = t.started_at or t.created_at %}
+          {% if t.started_at %}{% set began_tip = t.started_at | span(t.finished_at) %}
+          {% else %}{% set began_tip = "排队中，创建于 " ~ (t.created_at | clock) %}{% endif %}
+          <div class="task t-{{ t.status }}">
+            <div class="head">
+              <span class="role">{{ t.role | role_label }}</span>
+              <span class="stamp st-{{ t.status }}">{{ t.status | task_status }}</span>
+              <span class="task-times">
+                <span class="task-clock" title="{{ began_tip }}">{{ began | clock }}</span>
+                {% if t.started_at %}
+                <span class="task-elapsed" data-elapsed-from="{{ t.started_at }}"
+                      data-elapsed-to="{{ t.finished_at }}"
+                      title="{{ t.started_at | span(t.finished_at) }}">{{ seconds_between(t.started_at, t.finished_at) | duration }}</span>
+                {% endif %}
+                <span class="cost">${{ "%.3f"|format(t.cost_usd) }}</span>
+              </span>
+            </div>
+            {# The full text is rendered and clamped in CSS; a hard [:180] slice
+               threw away exactly the half of an objective the operator needed
+               to reproduce a step. Only truncated fields get the expand cue. #}
+            <div class="obj clampable{% if t.objective|length > 180 %} cut{% endif %}">{{ t.objective }}</div>
+            {% if t.result and t.result.summary %}
+            <div class="sum clampable{% if t.result.summary|length > 320 %} cut{% endif %}">{{ t.result.summary[:1200] }}</div>
+            {% endif %}
+          </div>
+          {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty">主 agent 还没有派活。</div>
+        {% endif %}
+      </section>
+
+      <section class="spane" data-spane="flags" hidden>
+        <div id="flags-body">
+          {% include "_flags.html" %}
+        </div>
+      </section>
+
+      <section class="spane" data-spane="facts" hidden>
+        {% if facts %}
+        <div class="tasks">
+          {% for f in facts[-60:] %}
+          <div class="task">
+            <div class="head">
+              <span class="role" style="color:var(--chalk-dim)">{{ f.kind | fact_kind }}</span>
+              {% if f.basis %}<span class="cost">{{ f.basis | basis_label }}</span>{% endif %}
+              <span class="cost">{% if f.task_id %}工单#{{ f.task_id }}{% else %}主 agent{% endif %}</span>
+            </div>
+            <div class="obj">{{ f.content[:260] }}</div>
+            {% set action = f.evidence.get("command") or f.evidence.get("request") or f.evidence.get("cmd") or f.evidence.get("url") %}
+            {% set result = f.evidence.get("output") or f.evidence.get("response") or f.evidence.get("stdout") or f.evidence.get("body") %}
+            {% if action %}<div class="method clampable{% if action|length > 200 %} cut{% endif %}">证据·命令：{{ action[:800] }}</div>{% endif %}
+            {% if result %}<div class="method clampable{% if result|length > 300 %} cut{% endif %}">证据·输出：{{ result[:800] }}</div>{% endif %}
+            {% if f.evidence.get("grounding_gap") %}
+            <div class="method">原标「{{ (f.evidence.get("declared_basis") or "") | basis_label }}」已降为推测：{{ f.evidence.get("grounding_gap") }}</div>
+            {% endif %}
+            {% if f.evidence.get("why_it_matters") %}
+            <div class="method">为什么重要：{{ f.evidence.get("why_it_matters") }}</div>
+            {% endif %}
+            {% if f.evidence.get("would_resolve") %}
+            <div class="method">怎样能解决：{{ f.evidence.get("would_resolve") }}</div>
+            {% endif %}
+            {% if f.resolves %}<div class="method">→ 解决未解问题 #{{ f.resolves }}</div>{% endif %}
+          </div>
+          {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty">黑板还是空的。</div>
+        {% endif %}
+      </section>
+
+      <section class="spane spane-log" data-spane="log" hidden>
+        <div class="console-tools">
+          <label><input type="checkbox" id="hide-results" checked> 隐藏工具返回</label>
+          <span class="mono faint">实时</span>
+        </div>
+        <pre class="console" id="console">{% for e in events %}{{ e.created_at }} [{{ e.kind }}] {{ e.payload | tojson }}
+{% endfor %}</pre>
+      </section>
+    </div>
+  </aside>
+</div>
+<div id="toast"></div>
+{% endblock %}

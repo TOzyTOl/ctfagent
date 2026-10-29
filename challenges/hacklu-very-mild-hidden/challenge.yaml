@@ -1,0 +1,15 @@
+name: very-mild-hidden
+category: reverse
+description: |
+  Hack.lu CTF 2026 · 逆向（beginner-friendly）。
+
+  I found that having the flag in plaintext was too obvious, so I felt like I
+  had to hide it a little bit.
+
+  Submit the flag in the competition's own format.
+flag_format: "CTF\\{[^}]+\\}"
+source: materials
+time_limit_s: 1800
+hints:
+  - 字符串表里没有 flag，但"比较"这件事一定发生了
+  - 程序很小，只有一处真正的判断

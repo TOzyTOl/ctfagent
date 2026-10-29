@@ -1,0 +1,13 @@
+name: Hard_RSA
+category: crypto
+description: |
+  NCTF 2026（2026-04-04）。
+
+  I hate RRRRRSSSSSAAAAA damn
+
+  task.py 末尾以注释形式给出了这一轮实例的 N / e / c 实际值。
+flag_format: "nctf\{[^}]+\}"
+source: materials
+time_limit_s: 2400
+hints:
+  - e 与 d 的模数是 (p^6-1)(q^6-1)，而不是常说的 phi(N)

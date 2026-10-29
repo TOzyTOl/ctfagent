@@ -1,0 +1,12 @@
+name: plane-or-exchange
+category: crypto
+description: |
+  DiceCTF 2026 Quals（2026-03-07）· 127 解。
+
+  Alice and Bob had a brief exchange, and now they know something which
+  I do not. Would you please help me to drop some Eves?
+flag_format: "dice\{[^}]+\}"
+source: materials
+time_limit_s: 2400
+hints:
+  - 附件里有一份协议实现和一份公开数据，协议本身没有漏洞，问题在参数

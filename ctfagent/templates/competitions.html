@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}比赛 · CTFAGENT{% endblock %}
+
+{% block body %}
+<div class="page" id="main" tabindex="-1">
+  <header class="page-head">
+    <div>
+      <h1>比赛</h1>
+      <p class="lede">
+        连接 CTFd 平台的账号，把题目和附件一键拉进来；解出的 flag 由你在工作台确认后，再点一下提交。
+        系统不会自动提交任何 flag。
+      </p>
+    </div>
+    <a class="btn" href="/new">新任务</a>
+  </header>
+
+  {% if notice %}<div class="banner ok">{{ notice }}</div>{% endif %}
+  {% if error %}<div class="banner bad">{{ error }}</div>{% endif %}
+
+  <section class="card">
+    <h2>连接一个新比赛</h2>
+    <form method="post" action="/api/competitions" class="grid-3">
+      <div class="field">
+        <label for="c-name">比赛名</label>
+        <input id="c-name" name="name" placeholder="例如：DASCTF 十月赛">
+      </div>
+      <div class="field">
+        <label for="c-url">平台地址</label>
+        <input id="c-url" name="base_url" required placeholder="https://ctf.example.com">
+      </div>
+      <div class="field">
+        <label for="c-token">API Token</label>
+        <input id="c-token" name="token" required autocomplete="off"
+               placeholder="CTFd → Settings → Access Token">
+      </div>
+      <div class="field field-actions">
+        <button class="primary" type="submit">连接并验证</button>
+      </div>
+    </form>
+    <p class="hint">
+      Token 只存在本机数据库里，不会出现在页面、日志或错误信息中。连接时会先调用
+      <code>/api/v1/users/me</code> 验证，失败不会保存。
+    </p>
+  </section>
+
+  {% if not rows %}
+  <div class="empty big">
+    <b>还没有连接任何比赛</b>
+    填上面的表单，系统会先验证 token 再保存。<br>
+    连上之后，未解的题目和附件可以一键同步进来。
+  </div>
+  {% endif %}
+
+  {% for row in rows %}
+  {% set comp = row.competition %}
+  <section class="card comp">
+    <header class="comp-head">
+      <div>
+        <h2>{{ comp.name }}</h2>
+        <div class="sub mono">{{ comp.base_url }} · {{ comp.platform }}</div>
+      </div>
+      <div class="comp-stats">
+        <span><b>{{ row.stats.solved }}</b>/{{ row.stats.challenges }} 已解</span>
+        <span><b>${{ "%.2f"|format(row.stats.cost) }}</b> 花费</span>
+        <span><b>{{ (row.stats.elapsed_s / 60) | round(0) | int }}</b> 分钟</span>
+      </div>
+    </header>
+
+    <div class="comp-actions">
+      <form method="post" action="/api/competitions/{{ comp.id }}/sync">
+        <button class="primary small" type="submit">同步题目与附件</button>
+      </form>
+      <form method="post" action="/api/competitions/{{ comp.id }}/start">
+        <button class="small" type="submit">给未开跑的题开跑</button>
+      </form>
+      <span class="hint">
+        {% if comp.last_synced_at %}上次同步 {{ comp.last_synced_at }} · {{ comp.last_sync_note }}
+        {% else %}尚未同步{% endif %}
+      </span>
+    </div>
+
+    {% if row.challenges %}
+    <table class="table">
+      <thead>
+        <tr><th>题目</th><th>方向</th><th>本地状态</th><th>附件</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for c in row.challenges %}
+        {% set runs = runs_by_challenge.get(c.id, []) %}
+        {% set solved = solved_challenges.get(c.id) %}
+        <tr>
+          <td>{{ c.name }}</td>
+          <td class="mono">{{ c.category | role_label }}</td>
+          <td>
+            {% if solved %}<span class="stamp st-confirmed">已捕获</span>
+            {% elif runs %}<span class="stamp st-running">已开跑 {{ runs | length }}</span>
+            {% else %}<span class="stamp st-queued">未开跑</span>{% endif %}
+          </td>
+          <td class="mono">{{ c.files | length }}</td>
+          <td class="right">
+            {% if runs %}
+            <a class="btn small" href="/runs/{{ runs[0].id }}">打开</a>
+            {% else %}
+            <form method="post" action="/api/competitions/{{ comp.id }}/start">
+              <input type="hidden" name="challenge_id" value="{{ c.id }}">
+              <button class="small" type="submit">开跑</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty">还没有从平台同步题目。</div>
+    {% endif %}
+  </section>
+  {% endfor %}
+</div>
+{% endblock %}

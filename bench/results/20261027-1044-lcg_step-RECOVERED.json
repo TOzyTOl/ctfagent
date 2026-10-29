@@ -1,0 +1,54 @@
+{
+  "created_at": "2026-10-27T02:47:44+00:00",
+  "recovered": true,
+  "recovered_how": "原始 bench 报告丢失：cli.py 打印用时行时用 :02d 格式化 float 抛异常，而 run_benchmark 的 finally 已删掉工作目录，报告没落盘。本文件由该次运行的库内时间戳 + 三份 SDK transcript (main 3948cc06 / crypto 44969a4c / verifier feb4b394) 重建，不是工具输出。",
+  "fields_not_measured": [
+    "cost_usd：原值随 bench.db 一起删除。此处只有 crypto+verifier 两会话的 cost-state 之和；主 agent 会话没有 cost-state，未计入，真实值更高。",
+    "elapsed_s：由 run.started_at(02:44:35Z) 到最后一个 transcript 时间戳(02:47:43Z) 推算，不是库内 finished_at。"
+  ],
+  "summary": {
+    "items": 1,
+    "solved": 1,
+    "verified": 1,
+    "solve_rate": 1.0,
+    "cost_usd": 1.8873,
+    "cost_per_solve_usd": 1.8873,
+    "elapsed_s": 188.0,
+    "library": "",
+    "notes": "（未使用训练笔记）",
+    "bench_db": "",
+    "cost_note": "1.8873 = crypto $1.1907 + verifier $0.6966，CLI 按 Anthropic 价目表对网关模型算的虚构值。按 config.toml 注释里的示例网关单价（input 0.55 / cache_read 0.14 / output 2.20 每百万 token）重算，三个会话合计约 $0.27。"
+  },
+  "results": [
+    {
+      "name": "lcg_step",
+      "category": "crypto",
+      "run_id": 1,
+      "status": "stopped",
+      "solved": true,
+      "hit": true,
+      "verified_hit": true,
+      "matched_value": "987654321",
+      "expected": "987654321",
+      "cost_usd": 1.8873,
+      "elapsed_s": 188.0,
+      "tasks": 2,
+      "flag_statuses": [
+        [
+          "987654321",
+          "verified"
+        ]
+      ],
+      "error": "",
+      "trace": {
+        "main_session": "3948cc06-eba7-4439-970e-45a4d15f66b5",
+        "crypto_session": "44969a4c-7a3c-4d1a-abc8-0ead52965c55",
+        "verifier_session": "feb4b394-09c0-4492-ae90-b4ed5127284a",
+        "run_started_at": "2026-10-27T02:44:35Z",
+        "dispatch_at": "2026-10-27T02:45:29Z",
+        "propose_flag_at": "2026-10-27T02:46:55Z",
+        "verdict_at": "2026-10-27T02:47:43Z"
+      }
+    }
+  ]
+}

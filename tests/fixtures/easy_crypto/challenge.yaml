@@ -1,0 +1,7 @@
+name: easy-crypto
+category: crypto
+description: |
+  A small RSA puzzle. n is the product of two primes that are suspiciously
+  close to each other. Recover the plaintext.
+flag_format: "flag\\{[^}]+\\}"
+time_limit_s: 600

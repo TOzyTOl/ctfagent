@@ -1,0 +1,6 @@
+name: easy-forensics
+category: forensics
+description: |
+  The flag is hidden somewhere in this archive. Find it.
+flag_format: "flag\\{[^}]+\\}"
+time_limit_s: 600

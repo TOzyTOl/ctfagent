@@ -1,0 +1,16 @@
+name: tangled
+category: misc
+description: |
+  FortID CTF 2026 · 杂项。
+
+  An abandoned factory hides a message within its tangled machinery. Untangle
+  the construction and uncover the secret.
+
+  (Note appended by the operator: each handout file is one long ASCII line that
+  begins with a stray character before the base64 payload.)
+flag_format: "(?i)fortid\\{[^}]+\\}"
+source: materials
+time_limit_s: 2400
+hints:
+  - 文件开头那个字符不属于 base64 字母表
+  - 解开之后是一份游戏存档格式的结构，答案在图里而不在文本里

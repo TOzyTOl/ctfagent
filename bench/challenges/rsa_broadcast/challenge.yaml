@@ -1,0 +1,8 @@
+name: rsa_broadcast
+category: crypto
+description: |
+  同一条消息被三个不同节点用 RSA 加密后广播，指数 e=3，无填充。三个节点的
+  模数互不相同，三对 (n, c) 都在 captures.json 里。恢复明文。
+flag_format: "flag\\{[^}]+\\}"
+source: materials
+time_limit_s: 1800

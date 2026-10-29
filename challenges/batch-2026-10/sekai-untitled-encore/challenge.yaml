@@ -1,0 +1,14 @@
+name: untitled-encore
+category: reverse
+description: |
+  SekaiCTF 2026（2026-06-27）· NORMAL · 173 解。
+
+  Yes, you can no longer make PJSK content with Sonolus.
+  No, I will not ask you to play with Sonolus...
+
+  附件：untitled-encore.exe（Windows PE64 控制台程序）。
+flag_format: "SEKAI\{[^}]+\}"
+source: materials
+time_limit_s: 3600
+hints:
+  - 先确定它读取的输入格式与长度，再从比较逻辑倒推

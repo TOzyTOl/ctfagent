@@ -1,0 +1,13 @@
+name: locked-in
+category: reverse
+description: |
+  DiceCTF 2026 Quals（2026-03-07）· 7 解。
+
+  Are we locking in rn?
+
+  附件：主程序 locked_in（静态链接 ELF）与 flag_verifier.bin。
+flag_format: "dice\{[^}]+\}"
+source: materials
+time_limit_s: 3600
+hints:
+  - 两个文件的配合关系比主程序本身更值得先看

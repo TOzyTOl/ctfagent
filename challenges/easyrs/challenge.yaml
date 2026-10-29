@@ -1,0 +1,8 @@
+name: easyrs
+category: reverse
+description: |
+  Windows console binary easyrs.exe with its PDB. Work out what it checks and
+  what it prints.
+flag_format: "flag\\{[^}]+\\}"
+source: C:\Users\20132\Desktop\attachment
+time_limit_s: 3600

@@ -1,0 +1,84 @@
+{# The multi-task window. Rendered server-side and re-fetched on a timer, so
+   every run's state stays live without a second SSE connection. #}
+{% macro rail_row(r, active_id) %}
+{% set captured = r.captured_flag %}
+{# A queued run has no start yet; its creation time is still the honest
+   "when did this arrive", and the elapsed span stays empty. #}
+{% set began = r.run.started_at or r.run.created_at %}
+{% if r.run.started_at %}{% set began_tip = r.run.started_at | span(r.run.finished_at) %}
+{% else %}{% set began_tip = "还没开始，创建于 " ~ (r.run.created_at | clock) %}{% endif %}
+<div class="rail-item {% if active_id and r.run.id == active_id %}on{% endif %} {% if captured %}captured{% endif %}"
+     data-run-id="{{ r.run.id }}">
+  <a class="rail-link" href="/runs/{{ r.run.id }}">
+    <span class="rail-top">
+      <span class="rail-id">#{{ r.run.id }}</span>
+      <span class="rail-name">{{ r.challenge.name if r.challenge else "?" }}</span>
+      <span class="rail-clock" title="{{ began_tip }}">{{ began | clock }}</span>
+    </span>
+    <span class="rail-mid">
+      {% set st = r.run.status %}
+      {% if captured %}<span class="stamp st-confirmed">已捕获</span>
+      {% elif st == "running" %}<span class="stamp st-running">运行中{% if r.running_tasks %} {{ r.running_tasks }}{% endif %}</span>
+      {% elif st == "needs_input" %}<span class="stamp st-paused">待确认</span>
+      {% elif st == "solved" %}<span class="stamp st-solved">已解出</span>
+      {% elif st == "failed" %}<span class="stamp st-failed">失败</span>
+      {% elif st == "stopped" %}<span class="stamp st-stopped">已停止</span>
+      {% elif st == "interrupted" %}<span class="stamp st-interrupted">中断</span>
+      {% else %}<span class="stamp st-queued">排队</span>{% endif %}
+      <span class="rail-times">
+        {% if r.run.started_at %}
+        <span class="rail-elapsed" data-elapsed-from="{{ r.run.started_at }}"
+              data-elapsed-to="{{ r.run.finished_at }}"
+              title="{{ r.run.started_at | span(r.run.finished_at) }}">{{ seconds_between(r.run.started_at, r.run.finished_at) | duration }}</span>
+        {% endif %}
+        <span class="rail-cost">${{ "%.2f"|format(r.run.cost_usd) }}</span>
+      </span>
+    </span>
+    <span class="rail-line">
+      {# Distillation writes into the skill library, not into this run: the note
+         outlives it and the run page would otherwise look identical to one that
+         never taught anything. #}
+      {% if r.notes %}<span class="note-chip" title="已沉淀到技能库：{{ r.notes | map(attribute='path') | join('、') }}">已沉淀</span>{% endif %}
+      {% if captured %}{{ captured.value }}
+      {% elif r.verified_flag %}{{ r.verified_flag.value }} · 待确认
+      {% else %}{{ r.activity or r.run.objective }}{% endif %}
+    </span>
+  </a>
+  <form method="post" action="/api/runs/{{ r.run.id }}/delete" class="rail-del"
+        onsubmit="return confirm('删除运行 #{{ r.run.id }}？它的记录、黑板和工作区都会删掉，题目本身和已沉淀的技术笔记保留。')">
+    <button type="submit" title="删除这个运行" aria-label="删除">×</button>
+  </form>
+</div>
+{% endmacro %}
+
+{% for group in rail_groups %}
+{# A folder header is a disclosure: a competition can hold twenty runs, and the
+   operator wants the heading, not the scroll. The server's default is "open
+   when something in it is live", and that is only a default: app.js remembers
+   what the operator actually chose, per folder, and restores it on every render
+   (this fragment is re-fetched every 5 s). Without that memory the unfiled
+   group re-opened itself on every page load, because its folder is None and
+   the old rule read that as "always open". #}
+{% set live_in_group = group.rows | selectattr("live") | list | length %}
+<details class="rail-group" data-folder="{{ group.folder.id if group.folder else '' }}"{% if live_in_group %} open{% endif %}>
+  <summary class="rail-group-head">
+    <span class="rg-name">{{ group.folder.name if group.folder else "未分类" }}</span>
+    {% if group.folder %}
+    <a class="rg-add" href="/new?folder={{ group.folder.id }}"
+       title="在「{{ group.folder.name }}」里开一个新任务"
+       onclick="event.stopPropagation()">＋</a>
+    {% endif %}
+    {# ``total`` is every run in the folder; ``rows`` is what the per-folder
+       window kept. Saying only the latter would make a big competition look
+       smaller than it is. #}
+    <span class="rg-count"{% if group.total > (group.rows | length) %} title="共 {{ group.total }} 条，这里显示最近的 {{ group.rows | length }} 条"{% endif %}>{% if group.total > (group.rows | length) %}{{ group.rows | length }}/{{ group.total }}{% else %}{{ group.rows | length }}{% endif %}</span>
+  </summary>
+  {% for r in group.rows %}{{ rail_row(r, active_id) }}{% endfor %}
+  {% if not group.rows %}
+  <div class="rail-group-empty">这个文件夹还没有任务。</div>
+  {% endif %}
+</details>
+{% endfor %}
+{% if not rail and not rail_groups %}
+<div class="rail-empty">还没有任务。<br>点「新任务」贴题就能开第一个。</div>
+{% endif %}

@@ -1,0 +1,13 @@
+name: VM_Encryptor
+category: reverse
+description: |
+  NCTF 2026（2026-04-04）。
+
+  官方题面为空，只有附件。
+
+  附件：vm-encryptor.exe（Windows PE）与 code.bin（虚拟机程序）。
+flag_format: "nctf\{[^}]+\}"
+source: materials
+time_limit_s: 2400
+hints:
+  - code.bin 的指令集由 exe 里的解释器决定，先还原解释器再反汇编字节码

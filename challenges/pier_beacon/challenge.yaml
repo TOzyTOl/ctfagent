@@ -1,0 +1,7 @@
+name: pier-beacon
+category: forensics
+description: |
+  A firmware/pcap bundle. Find the beacon configuration and any embedded secret.
+flag_format: "flag\\{[^}]+\\}"
+source: D:\agentsec\ctf_pier_beacon
+time_limit_s: 3600

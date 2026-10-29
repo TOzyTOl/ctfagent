@@ -1,0 +1,55 @@
+{# The flag list, rendered by both the run page and /api/runs/{id}/flags.
+   Kept as one template because the confirm action now swaps it in place
+   instead of reloading: a JS copy of the stamp logic would drift the first
+   time a flag state is added. #}
+{% if flags %}
+  {% for f in flags %}
+  <div class="flag f-{{ f.status }}">
+    {# The copy control is a button, not a click-the-text affordance.
+       The value is a 30-character token people copy once and paste
+       somewhere else; an invisible click target on a line of monospace
+       is the kind of "feature" nobody finds. The text itself stays
+       selectable for anyone who would rather drag over it. #}
+    <div class="value-row">
+      <div class="value" data-copy="{{ f.value }}">{{ f.value }}</div>
+      <button class="copy-flag" type="button" aria-label="复制 flag">复制</button>
+    </div>
+    <div class="meta">
+      <span class="stamp st-{{ f.status }}">{{ f.status | flag_status }}</span>
+      <span style="margin-left:8px">可信度 {{ f.confidence | confidence }}</span>
+    </div>
+    {% if f.method %}<div class="method">{{ f.method[:300] }}</div>{% endif %}
+    {% if f.status == "confirmed" and competition and challenge.external_id %}
+    {% set sub = submissions.get(f.id) %}
+    <div class="submit-row">
+      <form method="post" action="/api/flags/{{ f.id }}/submit">
+        <button class="primary small" type="submit">
+          {% if sub and sub.status in ("correct", "already_solved") %}重新提交{% else %}提交到 {{ competition.name }}{% endif %}
+        </button>
+      </form>
+      {% if sub %}
+      {% set label = {"correct": "平台判定正确", "already_solved": "此前已解出",
+                      "incorrect": "平台判定错误", "error": "提交失败"}.get(sub.status, sub.status) %}
+      <span class="submit-note sub-{{ sub.status }}">
+        {{ label }}{% if sub.message %} · {{ sub.message[:80] }}{% endif %}
+      </span>
+      {% endif %}
+    </div>
+    {% endif %}
+    {% if f.status in ("candidate", "verified") %}
+    <div class="actions">
+      <form method="post" action="/api/flags/{{ f.id }}/confirm" class="row" style="flex:1">
+        <input name="note" placeholder="确认备注（可选）">
+        <button class="primary small" type="submit">确认</button>
+      </form>
+      <form method="post" action="/api/flags/{{ f.id }}/reject">
+        <input type="hidden" name="note" value="">
+        <button class="danger small" type="submit">驳回</button>
+      </form>
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+{% else %}
+<div class="empty">还没有候选 flag。执行者提交后，会先由独立验证者复现，再交给你确认。</div>
+{% endif %}

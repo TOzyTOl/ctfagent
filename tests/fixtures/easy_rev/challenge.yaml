@@ -1,0 +1,6 @@
+name: easy-rev
+category: reverse
+description: |
+  A Python script checks the password and prints the flag. Read it.
+flag_format: "flag\\{[^}]+\\}"
+time_limit_s: 600

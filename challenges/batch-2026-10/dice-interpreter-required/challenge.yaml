@@ -1,0 +1,14 @@
+name: interpreter-required
+category: reverse
+description: |
+  DiceCTF 2026 Quals（2026-03-07）· 53 解。
+
+  I found this riddle in some ancient language, but I'm not sure what it
+  means... (don't interpret the puzzle, it will OOM your computer)
+
+  附件：interpreter（静态链接 ELF）与 flag_riddle.txt。
+flag_format: "dice\{[^}]+\}"
+source: materials
+time_limit_s: 3600
+hints:
+  - 题面已经警告过：别把它当成要真的跑起来的程序

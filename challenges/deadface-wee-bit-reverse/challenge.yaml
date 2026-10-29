@@ -1,0 +1,17 @@
+name: wee-bit-reverse
+category: reverse
+description: |
+  DEADFACE CTF 2026 · 逆向。
+
+  We pulled this binary off a DEADFACE member's machine. It's guarding something,
+  and it wants a password. Strings won't save you this time, they were just
+  clever enough to not leave it lying in plaintext. Figure out what it wants, and
+  it'll give up its secret.
+
+  Submit the flag as deadface{flag-text}.
+flag_format: "deadface\\{[^}]+\\}"
+source: materials
+time_limit_s: 2400
+hints:
+  - 二进制没被 strip，符号还在
+  - 校验是逐字节比对的，可以直接读比较的先后顺序反推 password

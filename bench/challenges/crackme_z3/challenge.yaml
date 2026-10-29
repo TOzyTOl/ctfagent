@@ -1,0 +1,9 @@
+name: crackme_z3
+category: reverse
+description: |
+  一个简单的口令校验器（见附件 crackme.py，纯 Python，无混淆无壳）。
+  它校验的 16 位可打印 ASCII 口令是唯一的——满足全部约束的口令只有一个。
+  口令本身就是本题答案。
+flag_format: "[!-~]{16}"
+source: materials
+time_limit_s: 1800

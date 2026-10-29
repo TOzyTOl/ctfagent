@@ -1,0 +1,10 @@
+name: lcg_step
+category: crypto
+description: |
+  巡检时抓到一台老设备的伪随机数发生器的连续输出。发生器是线性同余的：
+  s_{i+1} = (a*s_i + c) mod m，参数 a=1103515245、c=12345、m=2147483647。
+  keystream.txt 里是连续 6 个输出（从 s_1 开始）。设备出厂时装入的种子 s_0
+  从未出现在输出流里，它就是本题答案：提交它的十进制值。
+flag_format: "[0-9]+"
+source: materials
+time_limit_s: 1200

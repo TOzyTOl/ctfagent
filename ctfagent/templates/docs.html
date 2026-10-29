@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block title %}说明 · CTFAGENT{% endblock %}
+
+{% block body %}
+<div class="doc-wrap" id="main" tabindex="-1">
+<article class="docs">
+  <h1>怎么用</h1>
+
+  <h2>日常用法</h2>
+  <ol>
+    <li>打开首页，在输入框里贴题目原文、给目标地址，或者先聊两句；附件点「＋ 附件」，也可以直接拖进页面。Enter 发送，Shift+Enter 换行。</li>
+    <li>发送后进入工作台：左边是全部任务的列表，点一下就切换；中间是和主 agent 的对话，回复会逐字流出来。</li>
+    <li>你发的附件在对话里显示成文件卡片，点一下下载。跑着的时候可以继续补充线索，或再上传附件（会同时进 <code>attachments/</code> 并告诉主 agent）。</li>
+    <li>右侧「工单 / Flag / 黑板 / 日志」看它派了什么活、拿到什么、为什么停下。</li>
+  </ol>
+
+  <h2>一次运行会发生什么</h2>
+  <ol>
+    <li>主 agent 读题目和附件，判断方向，派一个 <code>triage</code> 或直接派方向 worker。</li>
+    <li>worker 各自在 <code>work/</code> 里跑真实命令，把结论写进共享黑板。</li>
+    <li>方向重的角色（reverse/pwn/malware 250 轮，forensics/crypto 200 轮）轮数更多；
+      真撞到轮数上限时，会话会被<strong>续几轮</strong>只做收尾——把已确认的东西写进黑板和 summary，
+      不再开新调查。预算撞上限则不续。</li>
+    <li>发现 flag 候选时，系统自动派一个 <code>verifier</code> 独立重推；它不能信提交者的脚本。</li>
+    <li>verifier 复现成功后运行暂停（待确认），<strong>由你确认</strong>。</li>
+    <li>确认后 writer 写报告，运行标记为已解出。</li>
+  </ol>
+
+  <h2>比赛接入</h2>
+  <ol>
+    <li>顶栏「比赛」页填平台地址和 CTFd Access Token，点「连接并验证」（token 无效不会保存）。</li>
+    <li>「同步题目与附件」把平台题目拉成本地题目，未解的题连同附件一起下载；重复同步不会重复建题。</li>
+    <li>「全部开跑」或逐题「开跑」，之后照常在工作台里解题。</li>
+    <li>flag 由你确认后，flag 卡片上才出现「提交到 &lt;比赛名&gt;」；点它才发到平台，结果记成回执。</li>
+  </ol>
+  <p class="dim">系统不会自动提交任何 flag；连接 token 只存在本机数据库。</p>
+
+  <h2>逆向工具（哪些角色有）</h2>
+  <p><code>triage / reverse / pwn / malware / forensics</code> 五个角色多一组 <code>mcp__re__*</code> 工具；
+  逆向类题目（<code>category</code> 为 reverse/pwn/malware/forensics）的 verifier 也拿得到，否则它只能重跑提交者的脚本，不算独立复现。
+  每次调用返回一条<strong>证据记录</strong>：<code>evidence_id</code>、<code>provider</code>、<code>normalized_result</code>、
+  <code>coverage.status</code>（complete / partial / failed）、<code>limitations</code>、<code>residual_unknowns</code>。</p>
+  <ul>
+    <li>列表结果分页，续读位置在 <code>coverage.paging.next_offset</code>；单条结果超长会标记截断，不会静默丢数据。</li>
+    <li><code>partial</code> 和 <code>failed</code> 不等于「不存在」——这是 worker 提示词里明确要求的读法。</li>
+    <li>内置 ELF/PE/Mach-O 解析器不依赖外部工具；readelf/objdump/gdb/r2/jadx 等由 <code>re_capabilities</code> 如实报告，缺什么直接说。</li>
+    <li><code>re_inspect</code> 会提示结构表之外的内嵌载荷（大块数据段、尾部附加数据）和 UPX/PyInstaller 打包痕迹——这类目标直接反汇编看到的是壳。</li>
+    <li>这些工具只读工作区内的文件，不执行目标程序；动态分析仍走 shell，钩子照常生效。</li>
+  </ul>
+
+  <h2>战例库（越用越强）</h2>
+  <p>每次运行结束，系统会从这次运行已经记录的东西里<strong>自动</strong>提炼一张战例卡：分类、走过的路线、
+  关键推导、已证实的死路、用到的技法（gdb / memcmp / pyinstaller 这类标识符）。不额外调用模型，所以不花钱，
+  也不会拖慢收尾。</p>
+  <ul>
+    <li>卡片<strong>从不保存 flag 字面值</strong>，只保存"怎么推出来的"。旧答案被模型复述、误提交是不可挽回的错误，所以这一步在写库前就抹掉。</li>
+    <li>没有结论、也没记录任何死路的失败运行不会留下卡片——"它没做出来"不是经验。</li>
+    <li>下一道题开跑时，按分类和题干/附件的词面重合度挑最多 3 张，注入主 agent、triage 和方向 worker 的提示词；verifier 故意不给，它必须从物证独立重推。</li>
+    <li>同一道题重跑时，它自己上一轮的卡片排在第一位——那张卡记的正是这份附件已经暴露过什么、卡在哪。</li>
+    <li>跨分类的卡片必须真有词面重合才会入选：只共用一个词（比如 <code>http</code>、<code>pie</code>）不算像。</li>
+    <li>提示词里会明确写"这些是别的题目的记录，里面的地址、密钥、字符串都不属于本题"，避免照搬。</li>
+    <li>卡片有 <code>used_count</code>，被注入一次记一次；哪张卡真有用，看这个数。</li>
+  </ul>
+
+  <h2>命令行等价操作</h2>
+  <pre class="lang-bash"><code>ctfagent run &lt;题目目录&gt;     # 开跑并在终端跟随
+ctfagent list                # 所有题目和运行
+ctfagent show &lt;run_id&gt;       # 任务、事实、flag
+ctfagent confirm &lt;flag_id&gt;   # 确认候选 flag（不写报告）
+ctfagent writeup &lt;run_id&gt;    # 为已确认的 flag 补写报告
+ctfagent doctor              # 环境自检</code></pre>
+
+  <p class="faint">确认 flag 只确认，不派 writer：比赛里确认完就该走下一题。
+  报告随时可以补，用上面的 <span class="mono">writeup</span> 命令或运行页的「写报告」按钮。
+  想恢复成确认即写报告，把 <span class="mono">config.toml</span> 的
+  <span class="mono">limits.writeup_on_confirm</span> 设为 <span class="mono">true</span>。</p>
+
+  <h2>题目目录格式</h2>
+  <pre class="lang-yaml"><code>name: n17
+category: crypto
+description: |
+  题面
+remote: "nc 1.2.3.4 31337"
+flag_format: "[0-9a-f]{32}"
+hints:
+  - "先看 nonce"
+time_limit_s: 2400
+source: D:/path/to/attachments   # 可选</code></pre>
+  <p class="dim">附件会被复制到工作区，原目录不会被改动。</p>
+
+  <h2>当前环境</h2>
+  <dl class="kv">
+    <dt>执行环境</dt><dd>{{ sandbox.mode if sandbox.mode != 'none' else '宿主机' }}{% if not sandbox.available and sandbox.mode == 'docker' %}（不可用：{{ sandbox.detail }}）{% endif %}</dd>
+    <dt>技能库</dt><dd>{{ skills_count }} 个（{{ cfg.skills_dir }}）</dd>
+    <dt>会话上限</dt><dd>{{ cfg.limits.max_sessions }} 个并发 · 每 run {{ cfg.limits.workers_per_run }} 个 worker</dd>
+    <dt>模型端点</dt><dd class="mono">{{ cfg.models.base_url or "CLI 默认" }}</dd>
+    <dt>CLI</dt><dd class="mono cli-path">{{ cli_path or "SDK 自带" }}</dd>
+  </dl>
+
+  <h2>安全边界</h2>
+  <p>会话以 <code>bypassPermissions</code> 运行，唯一的硬边界是 PreToolUse 钩子：危险命令黑名单 + 写入必须落在运行工作区内。这是<strong>防事故的黑名单，不是沙箱</strong>。需要真隔离时在 <code>config.toml</code> 里设 <code>[sandbox] mode = "docker"</code>。</p>
+  <p>flag 必须由人确认，系统不会自动提交到任何平台；提交到比赛平台也要在确认之后再点一次。</p>
+</article>
+</div>
+{% endblock %}

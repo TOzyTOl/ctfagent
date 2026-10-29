@@ -1,0 +1,15 @@
+name: Lossless_Not_Harmless
+category: forensics
+description: |
+  Cryovault 2026 Quals（2026-10-10）。
+
+  An archive server re-compresses every image that comes through it with
+  its own in-house compressor. One picture that passed through is hiding
+  a message.
+
+  You are given one file, mosaic_0417.png. The flag is in isfcr{...} format.
+flag_format: "isfcr\{[^}]+\}"
+source: materials
+time_limit_s: 2400
+hints:
+  - 「自己的压缩器」意味着 PNG 结构可能不是标准编码器写出来的

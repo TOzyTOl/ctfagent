@@ -1,0 +1,10 @@
+name: sha256_ext
+category: crypto
+description: |
+  内网 API 网关用 SHA-256(secret || message) 校验请求，secret 是 16 字节的
+  未知密钥，只参与拼接。一次抓包拿到一对有效的 (message, mac)，见 server.txt。
+  把 message 按字节追加 ";role=admin" 得到新 message，在不掌握 secret 的前提下
+  给出新 message 对应的合法 mac。提交 64 位十六进制 mac（可带 flag{} 包装）。
+flag_format: "[0-9a-f]{64}"
+source: materials
+time_limit_s: 2000

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>临岚轨道交通 · 检修数据核验</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand-mark">临岚<span>线网</span></div>
+    <div class="topbar-right"><span class="system-label">车辆检修数据核验平台</span><span class="env-pill"><i></i>隔离演练环境</span></div>
+  </header>
+  <main class="layout">
+    <aside class="rail-nav">
+      <div class="nav-title">业务系统</div>
+      <div class="nav-item"><span class="nav-icon">▦</span>运行总览</div>
+      <div class="nav-item active"><span class="nav-icon">⌁</span>检修记录核验</div>
+      <div class="nav-item"><span class="nav-icon">▤</span>设备台账</div>
+      <div class="nav-item"><span class="nav-icon">◷</span>值守事件</div>
+      <div class="nav-foot"><span class="status-dot"></span>服务运行中<br><small>隔离实例 · 不接入生产线网</small></div>
+    </aside>
+    <section class="content">
+      <div class="breadcrumbs">车辆检修 / 数据核验 / <strong>N17 夜间窗口</strong></div>
+      <div class="page-heading">
+        <div><div class="eyebrow">CRYPTO REVIEW · CASE 09-22-N17</div><h1>检修记录无法核验</h1><p>主备切换后，N17 车辆终端的一条检修记录未能通过完整性核验。请根据平台留存材料恢复记录内容。</p></div>
+        <div class="incident-state"><span class="state-badge">待复核</span><div>工单 <b>WO-N17-734</b></div><small>北环高架 · 夜间检修窗口</small></div>
+      </div>
+      <div class="notice"><span class="notice-icon">i</span><span>任务：恢复目标报文 <b>PKT-7340</b> 的原始明文，并修复其存储损坏的认证标签后提交。请结合密钥别名、版本台账、状态镜像和切换事件分析。AAD 格式：<code>LNT-OPS|设备编号|事件类型</code>。</span><button id="refresh" class="text-button">刷新材料 ↻</button></div>
+
+      <div class="section-head"><div><h2>取证材料</h2><p>数据来自本演练实例，记录编号、密文与密钥台账在实例启动时生成。</p></div><span id="lastUpdated" class="muted"></span></div>
+      <div class="evidence-grid">
+        <article class="panel records-panel">
+          <div class="panel-head"><div><span class="panel-kicker">01 / ENCRYPTED RECORDS</span><h3>加密报文</h3></div><span class="count-chip" id="recordCount">加载中</span></div>
+          <div class="table-scroll"><table><thead><tr><th>记录</th><th>设备 / 事件</th><th>密钥别名</th><th>Nonce</th></tr></thead><tbody id="recordsBody"><tr><td colspan="4">正在读取报文…</td></tr></tbody></table></div>
+          <div id="recordDetail" class="record-detail"><span class="detail-empty">选择一条记录查看密文和认证标签。</span></div>
+        </article>
+        <article class="panel lineage-panel">
+          <div class="panel-head"><div><span class="panel-kicker">02 / KEY CUSTODY</span><h3>密钥别名与版本台账</h3></div><span class="chip">只读</span></div>
+          <p class="panel-intro">业务侧使用别名；台账记录其对应的密钥对象、版本与派生上下文。</p>
+          <div class="lineage-list" id="lineageList"><div class="loading">正在读取台账…</div></div>
+        </article>
+        <article class="panel known-panel">
+          <div class="panel-head"><div><span class="panel-kicker">03 / STATUS MIRROR</span><h3>状态镜像记录</h3></div><span class="chip green">已确认</span></div>
+          <p class="panel-intro">只读镜像留有两条车厢状态记录和一条心跳报文的明文。记录编号与加密报文对应，字段值按检修交接单核实。</p>
+          <pre id="knownPlain" class="code-block">正在读取状态镜像…</pre>
+        </article>
+        <article class="panel events-panel">
+          <div class="panel-head"><div><span class="panel-kicker">04 / FAILOVER TIMELINE</span><h3>主备切换事件</h3></div><span class="chip">事件摘录</span></div>
+          <div id="eventList" class="event-list"><div class="loading">正在读取事件…</div></div>
+        </article>
+      </div>
+
+      <article class="panel submit-panel">
+        <div class="submit-copy"><span class="panel-kicker">FINAL / RECOVERY CHECK</span><h3>提交恢复结果</h3><p>提交 PKT-7340 的完整原始明文，以及修复后的 16 字节认证标签（32 位十六进制字符）。两项均正确时，平台返回本实例的通关凭据。</p></div>
+        <form id="submitForm"><label for="candidate">恢复出的原始明文</label><textarea id="candidate" name="plaintext" spellcheck="false" placeholder="粘贴解码后的原始 UTF-8 明文，保留 JSON 字段内容…"></textarea><label for="repairedTag">修复后的认证标签（Hex）</label><input id="repairedTag" name="repaired_tag" spellcheck="false" autocomplete="off" placeholder="32 位十六进制字符"><div class="submit-row"><span id="submitMessage" aria-live="polite"></span><button class="primary-button" type="submit">提交核验</button></div></form>
+      </article>
+      <footer>临岚轨道交通 · 密码应用故障演练 <span>本地授权 CTF 环境 · 所有数据均为虚构</span></footer>
+    </section>
+  </main>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

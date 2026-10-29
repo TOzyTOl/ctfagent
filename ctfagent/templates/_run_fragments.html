@@ -1,0 +1,5 @@
+{# The two pieces the run page redraws after a flag is confirmed, in one
+   response so the header row and the flag list can never land a poll apart:
+   the header is where 写报告 appears, and the list is where the buttons go. #}
+<div id="flags-body">{% include "_flags.html" %}</div>
+<div id="run-actions">{% include "_run_actions.html" %}</div>

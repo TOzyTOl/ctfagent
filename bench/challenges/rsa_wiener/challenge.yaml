@@ -1,0 +1,8 @@
+name: rsa_wiener
+category: crypto
+description: |
+  某运营平台泄露了它的 RSA 公钥和一条用它加密的广播（pubkey.txt：N、e、c）。
+  当年生成密钥的工程师挑了一个"好记"的私钥指数。恢复明文。
+flag_format: "flag\\{[^}]+\\}"
+source: materials
+time_limit_s: 2000

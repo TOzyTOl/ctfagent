@@ -1,0 +1,8 @@
+name: silentrotor
+category: crypto
+description: |
+  Multi-stage rotor cipher challenge. manual.txt describes the machine; the
+  remaining files are captured material from earlier stages.
+flag_format: "flag\\{[^}]+\\}"
+source: D:\agentsec\ctf\silentrotor
+time_limit_s: 3600

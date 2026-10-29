@@ -1,0 +1,16 @@
+name: implicit-twins
+category: crypto
+description: |
+  Cryovault 2026 Quals（2026-10-10）。
+
+  Two 1280-bit RSA keys, separated at birth. Neither of them will talk
+  alone.
+
+  chall.py 里的 load_flag() 兜底值 b"isfcr{REDACTED}" 是占位符，不是答案；
+  flag 是按 output.json 里的 N1 做教科书 RSA 加密后的密文 ct，
+  解密后从明文里取。
+flag_format: "isfcr\{(?!REDACTED\})[^}]+\}"
+source: materials
+time_limit_s: 3600
+hints:
+  - 两个模数的 gcd 是 1，共享的秘密在低比特里而不是公有因子

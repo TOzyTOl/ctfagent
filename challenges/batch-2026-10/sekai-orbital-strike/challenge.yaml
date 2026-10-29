@@ -1,0 +1,14 @@
+name: orbital_strike
+category: crypto
+description: |
+  SekaiCTF 2026（2026-06-27）· HARD · 43 解。
+
+  An orbital strike is an attack directed at a planetary surface from a
+  weapon system stationed in space (orbit).
+
+  chall.py 末尾以注释形式给出了本轮实例的 orbit 与 star 实际值。
+flag_format: "SEKAI\{[^}]+\}"
+source: materials
+time_limit_s: 2400
+hints:
+  - 两层 LCG 嵌套：主 LCG 的增量来自另一个模数更小的 LCG

@@ -1,0 +1,14 @@
+name: bedtime
+category: reverse
+description: |
+  DiceCTF 2026 Quals（2026-03-07）· 17 解。
+
+  官方题面只有作者（BrownieInMotion）和附件，没有正文。
+
+  附件是一个静态链接、已 strip 的 x86-64 ELF，运行后会要求输入。
+  在 Linux 环境（WSL 亦可）chmod +x 后运行，按提示交互。
+flag_format: "dice\{[^}]+\}"
+source: materials
+time_limit_s: 3600
+hints:
+  - 先看运行时到底要读多少字节、比较结果是怎么用的

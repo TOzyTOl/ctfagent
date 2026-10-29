@@ -1,0 +1,25 @@
+name: hooked
+category: forensics
+description: |
+  DEADFACE CTF 2026 · 取证（浏览器痕迹）。
+
+  De Monne Financial has detected suspicious outbound traffic originating from
+  workstation DEMONNE-WS04, assigned to employee Fletcher Kampeter in the Finance
+  division. A credential submission was logged against an unknown external host
+  at 10:23 AM on March 14, 2025 — during normal business hours. Browser artifacts
+  have been imaged from the machine and packaged for analysis.
+
+  DEADFACE is suspected of running a targeted spearphishing campaign against De
+  Monne personnel. It's unclear how deep the access goes, but finding the entry
+  point is the first step. Inspect the artifacts. Find the URL the employee
+  clicked.
+
+  Recover it from the browser web artifacts and submit it as the flag.
+
+  Example: deadface{http://suspicious-url.example.com/path?param=value}
+flag_format: "deadface\\{https?://[^}]+\\}"
+source: materials
+time_limit_s: 1800
+hints:
+  - Chrome 的 History / Cache / Cookies 各留了一部分事实，单独看任何一张表都拼不出完整 URL
+  - 注意哪些条目来自真实站点，哪些来自一个看起来很像的域名

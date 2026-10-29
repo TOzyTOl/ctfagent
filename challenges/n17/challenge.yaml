@@ -1,0 +1,9 @@
+name: n17
+category: crypto
+description: |
+  A telemetry capture from a vehicle cab. Records include nonces, ciphertexts and
+  authentication tags. Some records share a nonce. Recover the plaintext of the
+  maintenance record (the recovery record) and extract the trace token.
+flag_format: "[0-9a-f]{32}"
+source: materials
+time_limit_s: 2400

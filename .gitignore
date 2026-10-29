@@ -1,0 +1,39 @@
+# ---- runtime data ----------------------------------------------------------
+workspaces/
+*.db
+*.db-wal
+*.db-shm
+*.db.bak*
+ctfagent.pid
+*.pid
+
+# ---- environments & caches -------------------------------------------------
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.pt_tmp/
+.pt_tmp2/
+
+# ---- local debug artifacts -------------------------------------------------
+/*.log
+/_diag/
+/_run6_*.txt
+/_main_calls.txt
+/_dispatch.txt
+/_errs.txt
+nul
+
+# ---- machine-local tool state ---------------------------------------------
+.claude/
+.impeccable/
+.st1
+.st2
+.ui
+
+# ---- third-party reference material ---------------------------------------
+*.zip
+
+# config.toml stays machine-local: ctfagent init regenerates it, and the
+# operator's endpoint/model preferences do not belong in a shared repo.
+config.toml

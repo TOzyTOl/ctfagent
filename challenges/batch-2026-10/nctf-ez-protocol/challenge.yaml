@@ -1,0 +1,15 @@
+name: ezProtocol
+category: misc
+description: |
+  NCTF 2026（2026-04-04）。
+
+  incomplete protocol file and test network traffic
+
+  Try to getflag as admin.
+
+  附件：protocol.txt（协议常量与校验方式）与 test.pcapng（一段测试流量）。
+flag_format: "nctf\{[^}]+\}"
+source: materials
+time_limit_s: 2400
+hints:
+  - 协议里的 Key 是固定的；拿到结构后要自己构造一条合法请求

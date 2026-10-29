@@ -1,0 +1,19 @@
+const (
+	Magic = 0x47414D45
+
+	TypeAuth    = 0x01
+	TypeQuery   = 0x02
+	TypeGetFlag = 0x03
+
+	HeaderSize = 10
+
+	OffsetMagic    = 0
+	OffsetType     = 4
+	OffsetLength   = 5
+	OffsetChecksum = 6
+	OffsetPayload  = 10
+)
+
+var Key = []byte{0x4e, 0x43, 0x54, 0x46}
+
+checksum := crc32.ChecksumIEEE(append(headerBytes, payloadBytes...))

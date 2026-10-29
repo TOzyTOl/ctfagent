@@ -1,0 +1,15 @@
+name: The_Recurrence
+category: reverse
+description: |
+  Cryovault 2026 Quals（2026-10-10）。
+
+  Hand it 28 bytes. It will tell you nope.
+
+  附件：chall（x86-64 ELF，已 strip）。它从 stdin 读固定长度输入，
+  正确时打印 CORRECT。要交付的是被它接受的那段输入本身；
+  若该输入解出的是 isfcr{...} 形式的值，报那个值。
+# 答案形态未定死：不限定格式，由 agent 提交候选后人工确认。
+source: materials
+time_limit_s: 3600
+hints:
+  - 和 ouroboros 同一套题目作者，构造方式相近但长度不同
