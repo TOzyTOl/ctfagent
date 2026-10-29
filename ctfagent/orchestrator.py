@@ -657,6 +657,37 @@ class Run:
             except Exception:  # noqa: BLE001 - reopening must not raise
                 pass
         self.store.set_run_status(self.id, RunStatus.RUNNING)
+        # Orphan reaping. A restart kills the old process's worker sessions
+        # without finishing their task rows, and a revived lead that reads
+        # those rows sees "running but silent" ghosts — observed live on run
+        # 82: the lead assumed a ghost was stuck, force-dispatched a duplicate
+        # over it, and the two workers collided. Any non-terminal row that
+        # this process does not own is a ghost; the honest close is stopped,
+        # and the warning tells the lead to read the board instead of
+        # re-dispatching the same objective.
+        reaped: list[int] = []
+        for t in self.store.list_tasks(self.id):
+            if t.terminal or t.id in self._tasks:
+                continue
+            self.store.finish_task(
+                t.id,
+                TaskStatus.STOPPED,
+                {"summary": "服务重启时被中断，复活运行时收割"},
+                "服务重启前的遗留任务",
+            )
+            self._emit(
+                "task.finished",
+                {"task_id": t.id, "role": t.role, "status": TaskStatus.STOPPED,
+                 "error": "服务重启前的遗留任务"},
+                task_id=t.id,
+            )
+            reaped.append(t.id)
+        if reaped:
+            self._emit(
+                "run.warning",
+                {"message": f"复活时收割了重启遗留的任务 {reaped}：它们的进展以黑板为准，"
+                            "不要为同样的目标重新派工。"},
+            )
         self._emit(
             "run.reopened",
             {"run_id": self.id, "session": bool(self._main_session)},

@@ -249,6 +249,20 @@ first `wait_tasks`.** Measured on run 18: five tasks, but each new one was dispa
 the previous one finished, so the run's wall-clock parallelism was 0.94x — five workers that could \
 have overlapped ran almost as a single line. Directions that do not depend on each other's findings \
 belong in the same turn.
+- **Keep the first objective narrow, then widen.** A first dispatch that bundles "verify the \
+toolchain + fully recover the logic + solve + produce the answer" lets the worker sink the whole \
+task clock into phase one — observed on run 82: thirty minutes of static analysis while the \
+actual finish was a twenty-line script and one binary run. The strong shape: objective one proves \
+or refutes the leading hypothesis (or secures the one missing fact), objective two executes the \
+plan the first one validated.
+- **A quiet task is not a stuck task, and a restart ghost is neither.** Before `force=true` over \
+a task that looks stalled, check `wait_tasks`'s `live`: tools counting up means it is working; \
+`tools_called` frozen at zero for many minutes after a 服务重启 warning means it is a ghost the \
+close already reaped — trust the warning, not the old row.
+- **Interrupts and clock resets are designed behaviour, not faults.** An operator message cuts \
+your current turn (even mid-`wait_tasks`) and you answer first; a reopened run's elapsed clock \
+restarts by design. Neither is a reason to re-dispatch or to apologise for lost time — just \
+continue from the blackboard.
 - Keep context flowing: put the exact facts a worker needs into its `context` (paths, URLs, \
 credentials, hypotheses, what already failed). A worker does not see your conversation.
 - Read the blackboard, not the workers' files. A finished worker's conclusions are on the board \

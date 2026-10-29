@@ -1079,3 +1079,34 @@ def test_the_lead_is_told_to_block_rather_than_poll(
     )
     prompt = run._main_spec().system_prompt
     assert "wakes the instant any awaited task finishes" in prompt
+
+
+# ------------------------------------------------------------- orphan reaping
+# Live evidence (run 82): a server restart killed worker sessions without
+# finishing their rows; the revived lead read the ghost "running" row, assumed
+# it was stuck, force-dispatched a duplicate over it, and the two workers
+# collided. Reopen now reaps every non-terminal row the process does not own.
+
+
+async def test_reopen_reaps_restart_orphans_and_tells_the_lead(
+    cfg, fixtures_dir: Path, store_and_bus
+) -> None:
+    store, bus = store_and_bus
+    run = _manager(store, bus, cfg).prepare(
+        store.add_challenge(load_challenge(fixtures_dir / "easy_rev"))
+    )
+    ghost = store.create_task(run.id, "reverse", "unpack", "")
+    store.mark_task_started(ghost.id)  # running row from a dead process
+    live = store.create_task(run.id, "crypto", "sweep", "")
+    store.mark_task_started(live.id)
+    run._tasks[live.id] = asyncio.create_task(asyncio.sleep(3600))  # owned by this process
+
+    await run.reopen()
+
+    assert store.get_task(ghost.id).status == TaskStatus.STOPPED
+    assert "遗留" in (store.get_task(ghost.id).error or "")
+    assert store.get_task(live.id).status == "running"  # a live task is not a ghost
+    kinds = [e.kind for e in store.events_since(run.id)]
+    warnings = [e for e in store.events_since(run.id) if e.kind == "run.warning"]
+    assert warnings and "不要为同样的目标重新派工" in warnings[0].payload["message"]
+    run._tasks[live.id].cancel()
