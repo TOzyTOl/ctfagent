@@ -1,0 +1,45 @@
+﻿题目                   结果            成本       用时  说明
+n17                  √ 解出   $    6.56   20分56秒  8a6179153fd89b40b1eac51e3bc6825f
+lcg_step             √ 解出   $    0.82    2分20秒  987654321
+
+解出 2/2，总成本 $7.37，总用时 23 分钟
+结果：bench\results\bench-20261030-232119.json
+（基准数据库已丢弃；要保留加 --keep-db，路径 （已丢弃））
+.\.venv\Scripts\python.exe : Exception ignored in: <function BaseSubprocessTransport.__del__ at 0x000001EE0951CC20>
+At line:1 char:327
++ ... c\CTFAGENT; .\.venv\Scripts\python.exe -m ctfagent bench bench --only ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (Exception ignor...0001EE0951CC20>:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Traceback (most recent call last):
+  File "C:\Users\20132\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\base_subprocess.py", line
+ 126, in __del__
+    self.close()
+  File "C:\Users\20132\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\base_subprocess.py", line
+ 104, in close
+    proto.pipe.close()
+  File "C:\Users\20132\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\proactor_events.py", line
+ 109, in close
+    self._loop.call_soon(self._call_connection_lost, None)
+  File "C:\Users\20132\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\base_events.py", line 799
+, in call_soon
+    self._check_closed()
+  File "C:\Users\20132\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\base_events.py", line 545
+, in _check_closed
+    raise RuntimeError('Event loop is closed')
+RuntimeError: Event loop is closed
+Exception ignored in: <function _ProactorBasePipeTransport.__del__ at 0x000001EE0951E520>
+Traceback (most recent call last):
+  File "C:\Users\20132\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\proactor_events.py", line
+ 116, in __del__
+    _warn(f"unclosed transport {self!r}", ResourceWarning, source=self)
+                               ^^^^^^^^
+  File "C:\Users\20132\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\proactor_events.py", line
+ 80, in __repr__
+    info.append(f'fd={self._sock.fileno()}')
+                      ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\20132\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\windows_utils.py", line 1
+02, in fileno
+    raise ValueError("I/O operation on closed pipe")
+ValueError: I/O operation on closed pipe

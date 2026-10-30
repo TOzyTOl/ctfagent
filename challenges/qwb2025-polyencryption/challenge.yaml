@@ -1,0 +1,15 @@
+name: polyencryption
+category: reverse
+description: |
+  强网杯 2025 线上赛（第九届）· 逆向。
+
+  I love many languages what should i choose to create a reverse challenge?
+  How about all of it :P
+
+  附件里有一个 app/ 目录（运行入口是 run.sh，算法在 polyencrypt.dll）和一个
+  flag.enc。flag 的格式是 flag{...}。
+flag_format: "flag\\{[^}]+\\}"
+source: materials
+time_limit_s: 5400
+hints:
+  - 题目自己说"用了很多语言"，先看清 run.sh 把数据交给了谁

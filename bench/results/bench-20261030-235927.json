@@ -1,0 +1,73 @@
+{
+  "created_at": "2026-10-30T16:21:02+00:00",
+  "summary": {
+    "items": 1,
+    "solved": 1,
+    "verified": 1,
+    "solve_rate": 1.0,
+    "cost_usd": 1.6726,
+    "cost_per_solve_usd": 1.6726,
+    "elapsed_s": 1294.1,
+    "peak_hours": false,
+    "library": "",
+    "notes": "（未使用训练笔记）",
+    "bench_db": "C:\\Users\\20132\\AppData\\Local\\Temp\\ctfagent-bench-m21va5sp\\bench.db",
+    "config": {
+      "models": {
+        "main": "deepseek-v4-flash",
+        "worker": "deepseek-v4-flash",
+        "verifier": "deepseek-v4-flash",
+        "writer": "deepseek-v4-flash",
+        "roles": {}
+      },
+      "priced_models": [
+        "deepseek-v4-flash",
+        "deepseek-v4-pro"
+      ],
+      "limits": {
+        "task_timeout_s": 2700,
+        "task_timeout_s_by_category": {
+          "reverse": 4800,
+          "pwn": 4200,
+          "crypto": 4200,
+          "malware": 4200,
+          "forensics": 3000
+        },
+        "closing_task_timeout_s": 1200,
+        "run_timeout_s": 7200,
+        "task_max_turns": 150,
+        "role_max_turns": {
+          "reverse": 250,
+          "pwn": 250,
+          "malware": 250,
+          "forensics": 200,
+          "crypto": 200
+        },
+        "stall_timeout_s": 300
+      }
+    }
+  },
+  "results": [
+    {
+      "name": "easyrs",
+      "category": "reverse",
+      "run_id": 1,
+      "status": "stopped",
+      "solved": true,
+      "hit": true,
+      "verified_hit": true,
+      "matched_value": "flag{96b30dd3d5f0ec32ecdf3147fe8d39ce}",
+      "expected": "96b30dd3d5f0ec32ecdf3147fe8d39ce",
+      "cost_usd": 1.6726,
+      "elapsed_s": 1294.1,
+      "tasks": 3,
+      "flag_statuses": [
+        [
+          "flag{96b30dd3d5f0ec32ecdf3147fe8d39ce}",
+          "verified"
+        ]
+      ],
+      "error": ""
+    }
+  ]
+}

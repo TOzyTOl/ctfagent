@@ -1,0 +1,11 @@
+name: check-little
+category: crypto
+description: |
+  强网杯 2025 线上赛（第九届）· 密码。
+
+  e好像很小，是不是有关呢？
+
+  附件是出题脚本和它的输出；flag 的格式是 flag{...}。
+flag_format: "flag\\{[^}]+\\}"
+source: materials
+time_limit_s: 2400

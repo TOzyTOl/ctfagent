@@ -491,7 +491,39 @@ async def run_benchmark(
     summary["library"] = str(library) if library else ""
     summary["notes"] = str(notes_dir) if notes_dir else "（未使用训练笔记）"
     summary["bench_db"] = str(db_path) if keep_db else ""
+    summary["config"] = config_fingerprint(cfg)
     return results, summary
+
+def config_fingerprint(cfg: AppConfig) -> dict[str, Any]:
+    """What the run was produced under, so two reports can be told apart.
+
+    Without this, a report taken on one model and one taken on another are the
+    same JSON apart from a timestamp, and every "3x faster" claim rests on
+    remembering which config was live at the time. That is exactly how the
+    2026-10-30 comparison nearly went wrong: the earlier report's cost was
+    priced against a placeholder rate table.
+    """
+    models = cfg.models
+    return {
+        "models": {
+            "main": models.main,
+            "worker": models.worker,
+            "verifier": models.verifier,
+            "writer": models.writer,
+            "roles": dict(models.roles),
+        },
+        "priced_models": sorted(models.pricing),
+        "limits": {
+            "task_timeout_s": cfg.limits.task_timeout_s,
+            "task_timeout_s_by_category": dict(cfg.limits.task_timeout_s_by_category),
+            "closing_task_timeout_s": cfg.limits.closing_task_timeout_s,
+            "run_timeout_s": cfg.limits.run_timeout_s,
+            "task_max_turns": cfg.limits.task_max_turns,
+            "role_max_turns": dict(cfg.limits.role_max_turns),
+            "stall_timeout_s": cfg.limits.stall_timeout_s,
+        },
+    }
+
 
 def summarise(results: list[BenchResult]) -> dict[str, Any]:
     solved = [r for r in results if r.solved]

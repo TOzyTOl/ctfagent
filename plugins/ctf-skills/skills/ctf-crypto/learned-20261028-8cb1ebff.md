@@ -1,4 +1,4 @@
-<!-- usage {"helped": 6, "used": 6} -->
+<!-- usage {"helped": 7, "used": 7} -->
 <!-- 沉淀自 run 77（古典密码，2026-10-28）。由解出该题的运行蒸馏；flag 字面量已擦除。 -->
 
 # 前端 JS 泄露接口 + 同会话提交的古典密码（Atbash / Keyed Atbash）自动化解题

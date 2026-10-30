@@ -1,0 +1,103 @@
+﻿.\.venv\Scripts\python.exe : unhandled exception during asyncio.run() shutdown
+At line:1 char:327
++ ... c\CTFAGENT; .\.venv\Scripts\python.exe -m ctfagent bench bench --only ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (unhandled excep....run() shutdown:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+task: <Task finished name='Task-20' coro=<Run._run_task() done, defined at D:\agentsec\CTFAGENT\ctfagent\orchestrator.p
+y:2001> exception=ProgrammingError('Cannot operate on a closed database.')>
+Traceback (most recent call last):
+  File "D:\agentsec\CTFAGENT\.venv\Lib\site-packages\anyio\streams\memory.py", line 118, in receive
+    return self.receive_nowait()
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "D:\agentsec\CTFAGENT\.venv\Lib\site-packages\anyio\streams\memory.py", line 113, in receive_nowait
+    raise WouldBlock
+anyio.WouldBlock
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "D:\agentsec\CTFAGENT\.venv\Lib\site-packages\claude_agent_sdk\_internal\client.py", line 204, in _process_query
+_inner
+    async for data in query.receive_messages():
+  File "D:\agentsec\CTFAGENT\.venv\Lib\site-packages\claude_agent_sdk\_internal\query.py", line 1137, in receive_messag
+es
+    async for message in self._message_receive:
+  File "D:\agentsec\CTFAGENT\.venv\Lib\site-packages\anyio\abc\_streams.py", line 37, in __anext__
+    return await self.receive()
+           ^^^^^^^^^^^^^^^^^^^^
+  File "D:\agentsec\CTFAGENT\.venv\Lib\site-packages\anyio\streams\memory.py", line 126, in receive
+    await receive_event.wait()
+  File "D:\agentsec\CTFAGENT\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 1936, in wait
+    await self._event.wait()
+  File "C:\Users\20132\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\locks.py", line 212, in w
+ait
+    await fut
+asyncio.exceptions.CancelledError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "D:\agentsec\CTFAGENT\ctfagent\orchestrator.py", line 2136, in _run_task
+    event = await asyncio.wait_for(
+            ^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\20132\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\tasks.py", line 520, in w
+ait_for
+    return await fut
+           ^^^^^^^^^
+  File "D:\agentsec\CTFAGENT\ctfagent\backend.py", line 524, in run
+    async for message in sdk.query(prompt=spec.prompt, options=options):
+  File "D:\agentsec\CTFAGENT\.venv\Lib\site-packages\claude_agent_sdk\query.py", line 129, in query
+    async for message in client.process_query(
+  File "D:\agentsec\CTFAGENT\.venv\Lib\site-packages\claude_agent_sdk\_internal\client.py", line 56, in process_query
+    async for msg in inner:
+  File "D:\agentsec\CTFAGENT\.venv\Lib\site-packages\claude_agent_sdk\_internal\client.py", line 210, in _process_query
+_inner
+    await query.close()
+  File "D:\agentsec\CTFAGENT\.venv\Lib\site-packages\claude_agent_sdk\_internal\query.py", line 1182, in close
+    await self._close_impl()
+  File "D:\agentsec\CTFAGENT\.venv\Lib\site-packages\claude_agent_sdk\_internal\query.py", line 1207, in _close_impl
+    await self.transport.close()
+  File "D:\agentsec\CTFAGENT\.venv\Lib\site-packages\claude_agent_sdk\_internal\transport\subprocess_cli.py", line 1040
+, in close
+    await self._process.wait()
+  File "D:\agentsec\CTFAGENT\.venv\Lib\site-packages\anyio\_backends\_asyncio.py", line 1227, in wait
+    await self._exited.wait()
+  File "C:\Users\20132\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\locks.py", line 212, in w
+ait
+    await fut
+asyncio.exceptions.CancelledError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "D:\agentsec\CTFAGENT\ctfagent\orchestrator.py", line 2360, in _run_task
+    self._finish_task(
+  File "D:\agentsec\CTFAGENT\ctfagent\orchestrator.py", line 2544, in _finish_task
+    if self.store.get_task(task_id) is None:
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\agentsec\CTFAGENT\ctfagent\db.py", line 867, in get_task
+    row = self._row("SELECT * FROM tasks WHERE id=?", (task_id,))
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\agentsec\CTFAGENT\ctfagent\db.py", line 431, in _row
+    return self._conn.execute(sql, tuple(params)).fetchone()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+sqlite3.ProgrammingError: Cannot operate on a closed database.
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "D:\agentsec\CTFAGENT\ctfagent\orchestrator.py", line 2378, in _run_task
+    self.store.finish_task(task_id, TaskStatus.FAILED, {}, f"{type(exc).__name__}: {exc}")
+  File "D:\agentsec\CTFAGENT\ctfagent\db.py", line 902, in finish_task
+    self._exec(
+  File "D:\agentsec\CTFAGENT\ctfagent\db.py", line 421, in _exec
+    cur = self._conn.execute(sql, tuple(params))
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+sqlite3.ProgrammingError: Cannot operate on a closed database.
+题目                   结果            成本       用时  说明
+n17                  √ 解出   $    0.10    4分24秒  8a6179153fd89b40b1eac51e3bc6825f
+
+解出 1/1，总成本 $0.10，总用时 4 分钟
+结果：bench\results\bench-20261030-234949.json

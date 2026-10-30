@@ -263,6 +263,14 @@
     // every event name: agent traffic is the loud one, a confirmed flag is the
     // only one that gets the solved colour.
     row.className = "ev k-" + String(kind || "").split(".")[0] + (enter ? " just-in" : "");
+    // Only numeric ids are worker tasks: background shell ids (bm7hfz2vq 及其
+    // 同类) carry a task_id too, and a dropdown option named 工单 #bm7hfz2vq
+    // is noise. They stay visible under 运行级.
+    if (payload.task_id !== undefined && payload.task_id !== null
+        && /^\d+$/.test(String(payload.task_id))) {
+      row.dataset.task = payload.task_id;
+      rememberConsoleTask(payload.task_id);
+    }
     var t = document.createElement("span");
     t.className = "t";
     t.textContent = (createdAt || "").slice(11, 19) + "  ";
@@ -278,6 +286,36 @@
     el.appendChild(document.createTextNode("\n"));
     consoleState.events += 1;
     if (pinned) el.scrollTop = el.scrollHeight;
+  }
+
+  // Task ids seen in the log, for the filter dropdown. Distinct from the task
+  // table: a run-level event (no task) stays visible under "运行级", and a
+  // worker id only appears once its first event has.
+  var consoleTasks = {};
+
+  function rememberConsoleTask(id) {
+    id = String(id);
+    if (!/^\d+$/.test(id)) return;
+    if (consoleTasks[id]) return;
+    consoleTasks[id] = 1;
+    var select = document.getElementById("console-task");
+    if (!select) return;
+    var opt = document.createElement("option");
+    opt.value = id;
+    opt.textContent = "工单 #" + id;
+    select.appendChild(opt);
+  }
+
+  function applyConsoleTaskFilter() {
+    var select = document.getElementById("console-task");
+    var el = document.getElementById("console");
+    if (!select || !el) return;
+    var want = select.value;
+    for (var row of el.querySelectorAll("span.ev")) {
+      var task = row.dataset.task;
+      row.hidden = want !== "" && String(task || "main") !== want;
+    }
+    el.scrollTop = el.scrollHeight;
   }
 
   function scrollConsole() {
@@ -321,6 +359,18 @@
         try { sessionStorage.setItem("ctfagent.hideResults", toggle.checked ? "1" : "0"); } catch (e) {}
         location.reload();
       });
+    }
+
+    // The task filter: one dropdown, populated from what the backlog and the
+    // live stream have already shown. Filtering is display-only — the stream
+    // keeps running underneath, so clearing the filter brings everything back.
+    var taskFilter = document.getElementById("console-task");
+    if (taskFilter) {
+      taskFilter.addEventListener("change", applyConsoleTaskFilter);
+      // Rows parsed from the backlog registered themselves in
+      // rememberConsoleTask via appendEvent; the dropdown only needs its
+      // non-default options added once here.
+      Object.keys(consoleTasks).forEach(rememberConsoleTask);
     }
   }
 

@@ -772,7 +772,20 @@ def _bench_lines(results, summary) -> list[str]:
     run of this very table (2026-10-27, easyrs): the report had been written,
     the summary was lost to a traceback.
     """
-    lines = [f"{'题目':<20} {'结果':<6} {'成本':>9} {'用时':>8}  说明"]
+    lines = []
+    config = summary.get("config") or {}
+    models = config.get("models") or {}
+    if models:
+        # The first thing anyone compares two reports by. A table that does not
+        # say which model produced it is a table about a timestamp.
+        roles = models.get("roles") or {}
+        detail = "、".join(f"{k}={v}" for k, v in sorted(roles.items())) or "无覆盖"
+        lines.append(
+            f"模型：main={models.get('main')} worker={models.get('worker')} "
+            f"verifier={models.get('verifier')} writer={models.get('writer')}；"
+            f"方向覆盖：{detail}"
+        )
+    lines.append(f"{'题目':<20} {'结果':<6} {'成本':>9} {'用时':>8}  说明")
     for result in results:
         if result.solved:
             why = result.matched_value

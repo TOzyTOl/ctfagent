@@ -611,3 +611,26 @@ def test_the_bench_command_refuses_an_unknown_only_filter(tmp_path: Path, cfg, m
 
     assert cli.main(["bench", str(directory), "--only", "nope"]) == 2
     assert "没有匹配的条目" in capsys.readouterr().err
+
+
+def test_a_report_records_the_assignment_that_produced_it(cfg) -> None:
+    """Two reports from two model sets were indistinguishable but for a timestamp.
+
+    The 2026-10-30 comparison nearly read a cost difference as a code change
+    when it was a placeholder price table, because nothing in the JSON said
+    which models had been live.
+    """
+    from ctfagent.cli import _bench_lines
+
+    cfg.models.worker = "m-one"
+    cfg.models.roles = {"reverse": "m-two"}
+    fingerprint = bench.config_fingerprint(cfg)
+
+    assert fingerprint["models"]["worker"] == "m-one"
+    assert fingerprint["models"]["roles"] == {"reverse": "m-two"}
+    assert fingerprint["limits"]["task_timeout_s"] == cfg.limits.task_timeout_s
+
+    lines = _bench_lines([], {"solved": 0, "items": 0, "cost_usd": 0,
+                              "elapsed_s": 0, "config": fingerprint})
+    assert "worker=m-one" in lines[0]
+    assert "reverse=m-two" in lines[0]

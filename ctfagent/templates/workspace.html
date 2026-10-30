@@ -271,6 +271,10 @@
       <section class="spane spane-log" data-spane="log" hidden>
         <div class="console-tools">
           <label><input type="checkbox" id="hide-results" checked> 隐藏工具返回</label>
+          <select id="console-task" title="只看某个工单（或运行级）的事件">
+            <option value="">全部工单</option>
+            <option value="main">运行级 / 主 agent</option>
+          </select>
           <span class="mono faint">实时</span>
         </div>
         <pre class="console" id="console">{% for e in events %}{{ e.created_at }} [{{ e.kind }}] {{ e.payload | tojson }}

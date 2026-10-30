@@ -1,0 +1,39 @@
+{
+  "created_at": "2026-10-30T15:54:14+00:00",
+  "summary": {
+    "items": 1,
+    "solved": 1,
+    "verified": 1,
+    "solve_rate": 1.0,
+    "cost_usd": 0.1025,
+    "cost_per_solve_usd": 0.1025,
+    "elapsed_s": 264.7,
+    "peak_hours": false,
+    "library": "",
+    "notes": "（未使用训练笔记）",
+    "bench_db": "C:\\Users\\20132\\AppData\\Local\\Temp\\ctfagent-bench-0qftctgz\\bench.db"
+  },
+  "results": [
+    {
+      "name": "n17",
+      "category": "crypto",
+      "run_id": 1,
+      "status": "stopped",
+      "solved": true,
+      "hit": true,
+      "verified_hit": true,
+      "matched_value": "8a6179153fd89b40b1eac51e3bc6825f",
+      "expected": "8a6179153fd89b40b1eac51e3bc6825f",
+      "cost_usd": 0.1025,
+      "elapsed_s": 264.7,
+      "tasks": 2,
+      "flag_statuses": [
+        [
+          "8a6179153fd89b40b1eac51e3bc6825f",
+          "verified"
+        ]
+      ],
+      "error": ""
+    }
+  ]
+}

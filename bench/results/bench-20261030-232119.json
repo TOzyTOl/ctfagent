@@ -1,0 +1,60 @@
+{
+  "created_at": "2026-10-30T15:44:37+00:00",
+  "summary": {
+    "items": 2,
+    "solved": 2,
+    "verified": 2,
+    "solve_rate": 1.0,
+    "cost_usd": 7.3731,
+    "cost_per_solve_usd": 3.6865,
+    "elapsed_s": 1397.4,
+    "peak_hours": false,
+    "library": "",
+    "notes": "（未使用训练笔记）",
+    "bench_db": ""
+  },
+  "results": [
+    {
+      "name": "n17",
+      "category": "crypto",
+      "run_id": 1,
+      "status": "stopped",
+      "solved": true,
+      "hit": true,
+      "verified_hit": true,
+      "matched_value": "8a6179153fd89b40b1eac51e3bc6825f",
+      "expected": "8a6179153fd89b40b1eac51e3bc6825f",
+      "cost_usd": 6.5551,
+      "elapsed_s": 1256.9,
+      "tasks": 2,
+      "flag_statuses": [
+        [
+          "8a6179153fd89b40b1eac51e3bc6825f",
+          "verified"
+        ]
+      ],
+      "error": ""
+    },
+    {
+      "name": "lcg_step",
+      "category": "crypto",
+      "run_id": 2,
+      "status": "stopped",
+      "solved": true,
+      "hit": true,
+      "verified_hit": true,
+      "matched_value": "987654321",
+      "expected": "987654321",
+      "cost_usd": 0.818,
+      "elapsed_s": 140.5,
+      "tasks": 2,
+      "flag_statuses": [
+        [
+          "987654321",
+          "verified"
+        ]
+      ],
+      "error": ""
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+﻿模型：main=deepseek-v4-flash worker=deepseek-v4-flash verifier=deepseek-v4-flash writer=deepseek-v4-flash；方向覆盖：无覆盖
+题目                   结果            成本       用时  说明
+easyrs               √ 解出   $    1.67   21分34秒  flag{96b30dd3d5f0ec32ecdf3147fe8d39ce}
+
+解出 1/1，总成本 $1.67，总用时 21 分钟
+结果：bench\results\bench-20261030-235927.json
