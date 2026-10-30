@@ -67,7 +67,7 @@
 | 测试 | **426 passed / 1 skipped**，全部离线可跑（`ScriptedBackend`，不烧钱） |
 | 模型 | `fastmodel.top` 网关，`deepseek-v4-flash`（默认）与 `deepseek-v4-pro`（推理方向） |
 | 历史成绩 | 主库 66 次运行、13 次 solved（约 20%）；**8 题基准已解 5 题**，均值 $2.97/题 |
-| 最大短板 | 基准还差 **3 题**：`easyrs`（两次失败，$17.43）、`n17`、`rsa_wiener`。补跑方案见 `docs/交接-20261030-baseline补跑.md` |
+| 最大短板 | ~~无度量~~ **baseline 8/8 已完成**（$24.29，2026-10-30）——下一个短板是 P1 沙箱 |
 | 最大风险 | 无进程隔离（`guard.py` 是黑名单，`sandbox.mode=docker` 只是提示词开关） |
 
 **接手后第一件事**：`./start.sh`（Git Bash）或 `.\start.ps1`（PowerShell）起服务，打开
