@@ -25,6 +25,7 @@ from .models import (
     Fact,
     Flag,
     Folder,
+    Provider,
     Run,
     Submission,
     Task,
@@ -206,6 +207,39 @@ CREATE TABLE IF NOT EXISTS cases (
     last_used_at  TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS cases_category ON cases(category, outcome);
+
+-- Model endpoints the operator has tried. One row is active at a time
+-- (``app_settings.active_provider``); switching rewrites that pointer, and
+-- ``settings.apply_provider`` pushes it into the running config so the next
+-- dispatch uses it without a restart.
+--
+-- The token is stored in this file, exactly as it would be in config.toml.
+-- This table exists because the old arrangement — one endpoint in a file plus an
+-- environment variable that silently overrides it — made "which gateway am I
+-- actually on" a question you answered by running ``ctfagent doctor``.
+CREATE TABLE IF NOT EXISTS providers (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    name            TEXT NOT NULL DEFAULT '',
+    base_url        TEXT NOT NULL DEFAULT '',
+    auth_token      TEXT NOT NULL DEFAULT '',
+    api_key         TEXT NOT NULL DEFAULT '',
+    api_format      TEXT NOT NULL DEFAULT 'anthropic',
+    models          TEXT NOT NULL DEFAULT '[]',
+    last_probe      TEXT NOT NULL DEFAULT '',
+    last_probe_note TEXT NOT NULL DEFAULT '',
+    last_probed_at  TEXT NOT NULL DEFAULT '',
+    imported_from   TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Small key/value store for UI state that is not worth a column: which provider
+-- is active, and the per-role model assignment made on the credentials page
+-- (``models.roles`` JSON) so it survives a restart through the same path the
+-- page writes.
+CREATE TABLE IF NOT EXISTS app_settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+);
 """
 
 TERMINAL_RUN_STATES = ("solved", "failed", "stopped")
@@ -1303,6 +1337,135 @@ class Store:
             created_at=row["created_at"],
             last_synced_at=row["last_synced_at"],
             last_sync_note=row["last_sync_note"],
+        )
+
+    # -------------------------------------------------------------- providers
+    def add_provider(self, provider: Provider) -> int:
+        cur = self._exec(
+            """INSERT INTO providers
+               (name, base_url, auth_token, api_key, api_format, models,
+                last_probe, last_probe_note, last_probed_at, imported_from)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (
+                provider.name.strip(),
+                provider.base_url.strip().rstrip("/"),
+                provider.auth_token.strip(),
+                provider.api_key.strip(),
+                provider.api_format or "anthropic",
+                dumps(provider.models),
+                provider.last_probe,
+                provider.last_probe_note,
+                provider.last_probed_at,
+                provider.imported_from,
+            ),
+        )
+        return int(cur.lastrowid)
+
+    def find_provider(self, base_url: str) -> Provider | None:
+        """The row for this endpoint, so a re-import updates instead of duplicates."""
+        row = self._row(
+            "SELECT * FROM providers WHERE base_url=? ORDER BY id LIMIT 1",
+            (base_url.strip().rstrip("/"),),
+        )
+        return self._provider(row) if row else None
+
+    def get_provider(self, provider_id: int) -> Provider | None:
+        row = self._row("SELECT * FROM providers WHERE id=?", (provider_id,))
+        return self._provider(row) if row else None
+
+    def list_providers(self) -> list[Provider]:
+        return [self._provider(r) for r in self._rows("SELECT * FROM providers ORDER BY id")]
+
+    def count_providers(self) -> int:
+        row = self._row("SELECT COUNT(*) AS n FROM providers")
+        return int(row["n"]) if row else 0
+
+    def update_provider(
+        self,
+        provider_id: int,
+        *,
+        name: str,
+        base_url: str,
+        auth_token: str | None = None,
+        api_key: str | None = None,
+        api_format: str = "anthropic",
+    ) -> None:
+        """Change a provider. ``None`` for a secret means "keep the stored one".
+
+        The page echoes secrets back as a mask, so a form submitted without
+        retyping the token must not wipe it — the same rule the competition
+        accounts follow.
+        """
+        current = self.get_provider(provider_id)
+        if current is None:
+            return
+        self._exec(
+            """UPDATE providers
+               SET name=?, base_url=?, auth_token=?, api_key=?, api_format=?
+               WHERE id=?""",
+            (
+                name.strip() or current.name,
+                base_url.strip().rstrip("/"),
+                current.auth_token if auth_token is None else auth_token.strip(),
+                current.api_key if api_key is None else api_key.strip(),
+                api_format or current.api_format,
+                provider_id,
+            ),
+        )
+
+    def note_provider_probe(
+        self, provider_id: int, *, ok: bool, note: str, models: list[str] | None = None
+    ) -> None:
+        """Record the last probe, and the model list when one came back.
+
+        The model list is what the per-role dropdown is built from; an endpoint
+        that answers 404 for ``/v1/models`` leaves it empty rather than clearing
+        a list a previous probe filled in (a gateway can stop serving the route
+        without changing what it serves).
+        """
+        current = self.get_provider(provider_id)
+        if current is None:
+            return
+        models = models if models is not None else current.models
+        self._exec(
+            """UPDATE providers
+               SET last_probe=?, last_probe_note=?, last_probed_at=datetime('now'), models=?
+               WHERE id=?""",
+            ("ok" if ok else "failed", note[:400], dumps(models), provider_id),
+        )
+
+    def delete_provider(self, provider_id: int) -> None:
+        self._exec("DELETE FROM providers WHERE id=?", (provider_id,))
+        if self.get_setting("active_provider") == str(provider_id):
+            self.set_setting("active_provider", "")
+
+    @staticmethod
+    def _provider(row: sqlite3.Row) -> Provider:
+        return Provider(
+            id=row["id"],
+            name=row["name"],
+            base_url=row["base_url"],
+            auth_token=row["auth_token"],
+            api_key=row["api_key"],
+            api_format=row["api_format"],
+            models=loads(row["models"], []),
+            last_probe=row["last_probe"],
+            last_probe_note=row["last_probe_note"],
+            last_probed_at=row["last_probed_at"],
+            imported_from=row["imported_from"],
+            created_at=row["created_at"],
+        )
+
+    # ----------------------------------------------------------- app settings
+    def get_setting(self, key: str, default: str = "") -> str:
+        row = self._row("SELECT value FROM app_settings WHERE key=?", (key,))
+        return row["value"] if row else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        self._exec(
+            "INSERT INTO app_settings (key, value) VALUES (?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, value),
         )
 
     # -------------------------------------------------------------- submissions

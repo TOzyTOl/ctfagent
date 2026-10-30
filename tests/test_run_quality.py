@@ -9,6 +9,7 @@ verifier sessions for one value.
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -1110,3 +1111,308 @@ async def test_reopen_reaps_restart_orphans_and_tells_the_lead(
     warnings = [e for e in store.events_since(run.id) if e.kind == "run.warning"]
     assert warnings and "不要为同样的目标重新派工" in warnings[0].payload["message"]
     run._tasks[live.id].cancel()
+
+
+def test_the_scan_yields_to_the_structured_channel(
+    cfg, fixtures_dir: Path, store_and_bus
+) -> None:
+    """A worker that called submit_flag does not get its report scanned.
+
+    Live evidence (lcg_step experiment run): a `[0-9]+` flag format turned
+    every number in the winning worker's report into a low-confidence decoy —
+    nine junk candidates around one real flag. The scan is the safety net for
+    workers that forgot to submit, not a second opinion on those that did.
+    """
+    store, bus = store_and_bus
+    run = _manager(store, bus, cfg).prepare(
+        store.add_challenge(load_challenge(fixtures_dir / "easy_crypto"))
+    )
+    run.challenge.flag_format = "[0-9]+"
+    task = store.create_task(run.id, "crypto", "sweep", "")
+
+    # the worker used the structured channel
+    store.add_flag(run.id, task.id, "987654321", "work/solve.py", "m", "high")
+    run._scan_for_flags(
+        task.id,
+        "种子是 987654321，参数 a=1103515245，c=12345，m=2147483647，逆元 2104886853。",
+    )
+    assert store.list_flags(run.id).__len__() == 1  # no decoys added
+
+    # a worker that forgot to submit still gets the net
+    task2 = store.create_task(run.id, "crypto", "sweep", "")
+    run._scan_for_flags(task2.id, "答案就是 987654321。")
+    values = [f.value for f in store.list_flags(run.id)]
+    assert "987654321" in values  # wait — already exists; the scan dedups
+
+
+# ------------------------------------------- telling "working" from "stuck"
+
+
+async def test_live_reports_the_delta_since_the_lead_last_looked(
+    cfg, fixtures_dir: Path, store_and_bus
+) -> None:
+    """A bare tool count cannot answer "is it still working" on the second read.
+
+    The lead wakes every few minutes and sees the same counter in front of it;
+    a frozen worker and a progressing one look identical. ``new_tools`` is the
+    change since its previous ``wait_tasks``.
+    """
+    store, bus = store_and_bus
+    run = _manager(store, bus, cfg).prepare(
+        store.add_challenge(load_challenge(fixtures_dir / "easy_rev"))
+    )
+    task = store.create_task(run.id, "reverse", "unpack", "")
+    store.mark_task_started(task.id)
+    for i in range(2):
+        run._record_event(
+            AgentEvent("tool_use", {"tool": "PowerShell", "input": {}, "id": f"a{i}"}),
+            task.id,
+            "reverse",
+        )
+
+    first = (await run.wait([task.id], timeout_s=0))[0]["live"]
+    assert first["tools"] == 2
+    assert "new_tools" not in first  # nothing to compare against yet
+
+    # The page's activity strip reads live_progress; it must not consume the
+    # lead's snapshot and zero the next delta.
+    assert run.live_progress(task.id)["tools"] == 2
+
+    second = (await run.wait([task.id], timeout_s=0))[0]["live"]
+    assert second["new_tools"] == 0
+    assert second["checked_ago_s"] >= 0
+
+    run._record_event(
+        AgentEvent("tool_use", {"tool": "bash", "input": {}, "id": "a3"}),
+        task.id,
+        "reverse",
+    )
+    third = (await run.wait([task.id], timeout_s=0))[0]["live"]
+    assert third["new_tools"] == 1
+    assert third["last_tool"] == "bash"
+
+
+async def test_live_reports_the_task_clock_and_how_many_times_it_stalled(
+    cfg, fixtures_dir: Path, store_and_bus
+) -> None:
+    """``silent_s`` alone cannot tell 4 quiet minutes of 30 from 4 of 31."""
+    store, bus = store_and_bus
+    run = _manager(store, bus, cfg).prepare(
+        store.add_challenge(load_challenge(fixtures_dir / "easy_rev"))
+    )
+    task = store.create_task(run.id, "reverse", "unpack", "")
+    store.mark_task_started(task.id)
+    run._live[task.id] = {
+        "tools": 7, "last_tool": "bash", "last_event": time.time(),
+        "deadline": time.time() + 120, "stalls": 2,
+    }
+
+    live = run.live_progress(task.id)
+    assert live["stalls"] == 2
+    assert 110 <= live["clock_left_s"] <= 120
+
+
+def test_the_stall_clock_follows_the_turns_the_task_has_actually_made(
+    cfg, fixtures_dir: Path, store_and_bus
+) -> None:
+    """Run 84's task #164 made 279 s and 299 s turns with nothing wrong.
+
+    A constant 300 s clock reaped it, re-paid for its transcript, and then
+    watched the resumed session make the same turns again.
+    """
+    store, bus = store_and_bus
+    run = _manager(store, bus, cfg).prepare(
+        store.add_challenge(load_challenge(fixtures_dir / "easy_rev"))
+    )
+    base = cfg.limits.stall_timeout_s
+
+    # Nothing observed yet, and a fast model: the configured clock, unchanged.
+    assert run._turn_budget(base, []) == base
+    assert run._turn_budget(base, [12, 9, 14]) == base
+    # One slow turn is a hiccup, not a new normal.
+    assert run._turn_budget(base, [600]) == base
+
+    slow = [270, 290, 300, 299]
+    widened = run._turn_budget(base, slow)
+    assert widened > max(slow)
+    # And still bounded: a dead gateway has to be caught inside the tool clock.
+    assert widened <= cfg.limits.tool_wait_timeout_s
+    assert run._turn_budget(base, [5000, 5000, 5000]) == cfg.limits.tool_wait_timeout_s
+
+
+# --------------------------------------------- the clock each role is given
+
+
+def test_closing_roles_do_not_inherit_the_challenges_wall_clock(
+    cfg, fixtures_dir: Path, store_and_bus
+) -> None:
+    """A verifier reproduces one value; it is not doing the reverse worker's job.
+
+    It used to take the challenge's clock, so on a reverse task it was entitled
+    to the same 3600 s the reverse worker had.
+    """
+    store, bus = store_and_bus
+    cfg.limits.task_timeout_s_by_category = {"reverse": 4800}
+    cfg.limits.closing_task_timeout_s = 1200
+    challenge = load_challenge(fixtures_dir / "easy_rev")
+    challenge.category = "reverse"
+    run = _manager(store, bus, cfg).prepare(store.add_challenge(challenge))
+
+    assert run._task_clock("reverse") == 4800
+    assert run._task_clock("verifier") == 1200
+    assert run._task_clock("writer") == 1200
+    # A short category clock is not raised by the closing cap.
+    cfg.limits.task_timeout_s_by_category = {"misc": 600}
+    run.challenge.category = "misc"
+    assert run._task_clock("verifier") == 600
+
+
+async def test_stopping_a_task_frees_it_and_refuses_the_rest(
+    cfg, fixtures_dir: Path, store_and_bus
+) -> None:
+    """The lead could open directions but not close one.
+
+    A refuted direction kept its worker slot and its wall clock until the clock
+    reaped it.
+    """
+    store, bus = store_and_bus
+    # A stream that stays open, so the task is genuinely mid-run when it is
+    # stopped — the scripted backend answers in milliseconds.
+    run = _manager(store, bus, cfg, _BackgroundBackend(silence_s=30)).prepare(
+        store.add_challenge(load_challenge(fixtures_dir / "easy_rev"))
+    )
+    task = await run.dispatch("reverse", "crack the archive", "")
+    await asyncio.sleep(0.02)
+
+    stopped = run.stop_task(task.id, "黑板上的结论已经推翻了这条路")
+    assert stopped["status"] == "stopping"
+
+    for _ in range(200):
+        if store.get_task(task.id).terminal:
+            break
+        await asyncio.sleep(0.02)
+    finished = store.get_task(task.id)
+    assert finished.status == TaskStatus.STOPPED
+    # The reason is reviewable even though the transcript is not.
+    assert any("停止了工单" in f.content for f in store.list_facts(run.id))
+
+    # Stopping it twice, or a task that never ran here, is an error, not a crash.
+    assert "error" in run.stop_task(task.id)
+    assert "error" in run.stop_task(99999)
+
+
+# ------------------------------------------------ the endpoint failing, not the task
+
+
+def test_a_gateway_error_is_recognised_from_the_clis_own_text() -> None:
+    from ctfagent.backend import gateway_error
+
+    real = (
+        "API Error: 503 No available channel for model spark-x2.6 under group "
+        "default (distributor) (request id: 2026...). This is a server-side issue"
+    )
+    assert "No available channel" in gateway_error(real)
+    assert gateway_error("API Error: 404 model_not_found") == "API Error: 404 model_not_found"
+    assert gateway_error("API Error: 429 rate_limit_error") == "API Error: 429 rate_limit_error"
+    # A challenge that answers 503 is evidence about the target, not the gateway.
+    assert gateway_error("target returned 503 Service Unavailable") == ""
+    assert gateway_error("the server answered 500") == ""
+
+
+async def test_two_gateway_failures_stop_further_dispatch(
+    cfg, fixtures_dir: Path, store_and_bus
+) -> None:
+    """Run 84 paid for five pwn sessions in a row against a model that 503s.
+
+    The summary read like a task outcome, so nothing told the lead this was the
+    endpoint. Two of them now stop new dispatches until the operator acts.
+    """
+    from ctfagent.tools import OrchestratorTools
+
+    store, bus = store_and_bus
+    run = _manager(store, bus, cfg).prepare(
+        store.add_challenge(load_challenge(fixtures_dir / "easy_rev"))
+    )
+    tools = OrchestratorTools(run)
+    outage_text = "API Error: 503 No available channel for model spark-x2.6 under group default"
+
+    task = store.create_task(run.id, "pwn", "exploit", "")
+    assert run._note_gateway_failure(task, {"result": outage_text}, "") == outage_text
+    task2 = store.create_task(run.id, "pwn", "exploit", "")
+    run._note_gateway_failure(task2, {"result": outage_text}, "")
+
+    refused = await tools.dispatch_task("pwn", "try again")
+    assert "error" in refused
+    assert "端点正在拒绝会话" in refused["error"]
+    assert refused["gateway_outage"]["count"] == 2
+
+    # One warning per model, not one per dead worker.
+    warnings = [e for e in store.events_since(run.id) if e.kind == "run.warning"]
+    assert len([w for w in warnings if w.payload.get("kind") == "gateway_error"]) == 1
+
+
+async def test_a_failed_task_records_why_the_lead_could_not_see(
+    cfg, fixtures_dir: Path, store_and_bus
+) -> None:
+    """FAILED with an empty error column said "失败" and nothing else."""
+    store, bus = store_and_bus
+    run = _manager(store, bus, cfg).prepare(
+        store.add_challenge(load_challenge(fixtures_dir / "easy_rev"))
+    )
+    task = store.create_task(run.id, "misc", "look", "")
+    store.mark_task_started(task.id)
+    run._finish_task(
+        task.id, "misc", TaskStatus.FAILED, "",
+        {"subtype": "error_during_execution", "result": "boom: socket closed"}, "",
+    )
+    assert "socket closed" in (store.get_task(task.id).error or "")
+
+
+class _ResultThenHangBackend:
+    """Emits the terminal result and then refuses to end the stream.
+
+    The live CLI behavior that froze run 88's verifier for 18 minutes: the
+    result message arrives, the subprocess keeps living, and the orchestrator's
+    stream iteration waits forever for a teardown that never comes.
+    """
+
+    def __init__(self) -> None:
+        import asyncio as _aio
+
+        self._release = _aio.Event()
+
+    async def run(self, spec):
+        from ctfagent.backend import AgentEvent
+
+        yield AgentEvent("init", {"subtype": "init", "session_id": "s-hang"})
+        yield AgentEvent(
+            "result",
+            {"subtype": "success", "is_error": False, "result": "done",
+             "session_id": "s-hang", "usage": {}},
+            cost_usd=0.1, turns=1,
+        )
+        await self._release.wait()
+
+    def open_client(self, spec):  # pragma: no cover - the lead is never started here
+        raise NotImplementedError("this test never starts the lead session")
+
+
+async def test_a_result_event_ends_the_task_even_when_the_stream_hangs(
+    cfg, fixtures_dir: Path, store_and_bus
+) -> None:
+    """A result is terminal; the orchestrator must not wait for CLI teardown."""
+    store, bus = store_and_bus
+    backend = _ResultThenHangBackend()
+    run = _manager(store, bus, cfg, backend=backend).prepare(
+        store.add_challenge(load_challenge(fixtures_dir / "easy_crypto"))
+    )
+    task = await run.dispatch("crypto", "work")
+
+    await asyncio.wait_for(run.wait([task.id], timeout_s=5), timeout=10)
+
+    row = store.get_task(task.id)
+    assert row.status == TaskStatus.DONE
+    assert row.result.get("summary") == "done"
+    assert row.cost_usd == pytest.approx(0.1)
+
+    backend._release.set()  # let the test process unwind cleanly

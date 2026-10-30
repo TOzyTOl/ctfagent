@@ -37,3 +37,7 @@ nul
 # config.toml stays machine-local: ctfagent init regenerates it, and the
 # operator's endpoint/model preferences do not belong in a shared repo.
 config.toml
+
+# ---- machine-local one-offs ------------------------------------------------
+config.toml.bak-*
+_fixbase.py

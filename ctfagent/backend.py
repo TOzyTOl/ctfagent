@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import sys
 from dataclasses import dataclass, field
@@ -43,6 +44,39 @@ _AUTH_TEXT = ("Not logged in", "Please run /login", "Failed to authenticate")
 
 def _looks_like_auth(text: str) -> bool:
     return any(marker in text for marker in _AUTH_TEXT)
+
+
+#: A gateway answered, and the answer was about the gateway itself — not about
+#: the challenge and not about the task's work. Six worker tasks in runs 83/84
+#: died this way in three minutes each ("API Error: 503 No available channel for
+#: model spark-x2.6"), were recorded as ordinary failures, and the lead
+#: re-dispatched the same direction four more times: the summary read like a
+#: task outcome, so there was nothing telling it otherwise.
+_GATEWAY_ERROR = re.compile(
+    r"API Error:\s*(?:40[13]|42[49]|5\d\d)"
+    r"|No available channel"
+    r"|model_not_found"
+    r"|(?:invalid|unknown)\s+model"
+    r"|overloaded_error"
+    r"|rate_limit_error",
+    re.IGNORECASE,
+)
+
+
+def gateway_error(text: str) -> str:
+    """The gateway's own words when ``text`` is an infrastructure failure, else "".
+
+    Kept narrow on purpose: a task that legitimately reports "the target
+    returned 503" must not be read as the endpoint being down, so the status
+    code has to follow the CLI's ``API Error:`` prefix rather than appear on its
+    own.
+    """
+    match = _GATEWAY_ERROR.search(str(text or ""))
+    if match is None:
+        return ""
+    # One sentence, so it fits in an error column and a warning line.
+    line = " ".join(str(text).split())
+    return line[:400]
 
 
 @dataclass

@@ -224,3 +224,21 @@ async def test_the_ceiling_closing_turn_cannot_hang_the_close(run) -> None:
     result = await asyncio.wait_for(run._watchdog_tick(), timeout=10)
     assert result is True
     assert run.store.get_run(run.id).status == "failed"
+
+
+async def test_the_lead_cannot_close_a_run_solved_by_itself(run) -> None:
+    """finish_run(solved) is coerced to needs_input.
+
+    Observed on the lcg_step experiment run: verifier reproduced, and the lead
+    called finish_run(solved) — closing the run without the operator decision
+    the docs promise ("reproduced → needs_input，等你确认"). A worker cannot
+    declare victory, and neither can the lead; solved is the operator's word,
+    spoken through confirm_flag.
+    """
+    flag = run.store.add_flag(run.id, None, "flag{x}", "s", "m", "high")
+    assert flag is not None
+    run.store.set_flag_status(flag.id, FlagStatus.VERIFIED)
+    run.request_finish("solved", "验证器都通过了，我直接收尾")
+
+    assert run._finish_status == "needs_input"
+    assert run.store.get_run(run.id).status == "needs_input"

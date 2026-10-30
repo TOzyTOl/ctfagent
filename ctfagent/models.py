@@ -332,6 +332,49 @@ class Competition:
 
 
 @dataclass
+class Provider:
+    """One model endpoint + token, the way a switcher keeps them in a list.
+
+    The reason this exists as a row rather than only as ``config.toml``: changing
+    gateways used to mean hand-editing three keys in a file guarded by an
+    ``ANTHROPIC_AUTH_TOKEN`` environment variable, and the operator could not
+    see which of the several endpoints they had tried still worked. A row keeps
+    the address, the masked token, the models that endpoint actually served, and
+    whether it was the last one verified.
+
+    ``token_kind`` records *which* variable carries the secret: gateways differ
+    on ``ANTHROPIC_AUTH_TOKEN`` vs ``ANTHROPIC_API_KEY`` and the child session
+    has to be given the same one the gateway expects.
+    """
+
+    id: int
+    name: str
+    base_url: str = ""
+    auth_token: str = ""
+    api_key: str = ""
+    #: ``anthropic`` (default) or ``openai`` (a translation proxy must sit in front).
+    api_format: str = "anthropic"
+    #: Model names this endpoint returned from ``/v1/models``; empty = never probed.
+    models: list[str] = field(default_factory=list)
+    #: Last probe result, so a saved-but-broken endpoint is visible before a run
+    #: starts. ``ok`` / ``failed`` / ``""`` (never probed).
+    last_probe: str = ""
+    last_probe_note: str = ""
+    last_probed_at: str = ""
+    #: Where the row came from: ``""`` (typed here) or ``ccswitch`` (imported).
+    imported_from: str = ""
+    created_at: str = ""
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.base_url.strip() and (self.auth_token.strip() or self.api_key.strip()))
+
+    @property
+    def secret(self) -> str:
+        return self.auth_token or self.api_key
+
+
+@dataclass
 class Submission:
     """One attempt to send a confirmed flag to the platform."""
 

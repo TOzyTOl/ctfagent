@@ -726,12 +726,24 @@ def _doctor(cfg) -> int:
 
 
 def _init(cfg, force: bool) -> int:
+    from . import instance  # noqa: PLC0415 - only init needs it
+
     path = Path(__file__).resolve().parent.parent / "config.toml"
     if path.exists() and not force:
         print(f"{path} 已存在；要覆盖请加 --force")
         return 1
     path.write_text(default_config_toml(), encoding="utf-8")
     print(f"已写入 {path}")
+    # The provider list lives in the database, and the credentials page adopts
+    # the file's endpoint into it on first load. Re-running init while the
+    # server is up would therefore overwrite a switch made on the page with no
+    # sign that anything was lost — say so before it happens, not after.
+    if instance.running_instance(cfg) is not None:
+        print(
+            "注意：服务正在运行。凭据页切换过的供应商存在数据库里；"
+            "如果当前生效的端点也是从 config.toml 收编来的，下次打开页面时"
+            "会以这份新文件为准。要保留现有供应商，先在凭据页切到想留下的那一家。"
+        )
     return 0
 
 

@@ -665,27 +665,377 @@ def create_app(cfg: AppConfig | None = None, *, scripted: bool = False) -> FastA
             },
         )
 
+    def _settings_context(
+        notice: str = "", error: str = ""
+    ) -> dict[str, Any]:
+        """Everything the credentials page renders, resolved once per request.
+
+        Providers are read on every request rather than cached: the page is the
+        one place that answers "which endpoint am I on", and a stale answer is
+        worse than a millisecond.
+        """
+        active_id = model_settings.provider_id_from_state(store, cfg)
+        providers = [
+            model_settings.provider_view(p, active_id) for p in store.list_providers()
+        ]
+        active = next((p for p in providers if p["active"]), None)
+        # The dropdown offers what the active endpoint actually serves, plus
+        # whatever is already assigned — a model name saved earlier must stay
+        # selectable even if the probe has not been run since.
+        choices: list[str] = []
+        for name in list((active or {}).get("models", [])) + model_settings.assigned_models(cfg):
+            if name and name not in choices:
+                choices.append(name)
+        return {
+            "page": "settings",
+            "cfg": cfg,
+            "sandbox": sandbox,
+            "sessions_active": manager.pool.active,
+            "cli_path": resolve_cli_path(cfg.cli_path),
+            "skills_count": _count_skills(cfg.skills_dir),
+            "creds": model_settings.state(cfg),
+            "providers": providers,
+            "active_provider": active,
+            "role_view": model_settings.role_view(cfg),
+            "model_choices": choices,
+            "role_order": model_settings.ROLE_ORDER,
+            "directions": [
+                (d, ROLE_LABEL.get(d, d)) for d in model_settings.DIRECTIONS
+            ],
+            "config_path": str(REPO_ROOT / "config.toml"),
+            "notice": notice,
+            "error": error,
+        }
+
     @app.get("/settings", response_class=HTMLResponse)
     async def settings_page(
         request: Request, notice: str = "", error: str = ""
     ) -> HTMLResponse:
-        """Model credentials: what is in effect, and where it came from."""
+        """Model credentials: the provider list, what is in effect, and models."""
         return TEMPLATES.TemplateResponse(
-            request,
-            "settings.html",
-            {
-                "page": "settings",
-                "cfg": cfg,
-                "sandbox": sandbox,
-                "sessions_active": manager.pool.active,
-                "cli_path": resolve_cli_path(cfg.cli_path),
-                "skills_count": _count_skills(cfg.skills_dir),
-                "creds": model_settings.state(cfg),
-                "config_path": str(REPO_ROOT / "config.toml"),
-                "notice": notice,
-                "error": error,
-            },
+            request, "settings.html", _settings_context(notice, error)
         )
+
+    def _back(key: str, message: str) -> RedirectResponse:
+        return RedirectResponse(
+            f"/settings?{key}={urllib.parse.quote(message)}", status_code=303
+        )
+
+    def _write_credentials(**kwargs: Any) -> None:
+        """Persist the active endpoint to config.toml, where a restart reads it."""
+        model_settings.write_credentials(REPO_ROOT / "config.toml", **kwargs)
+
+    @app.post("/api/settings/providers")
+    async def add_provider(
+        name: str = Form(""),
+        base_url: str = Form(""),
+        auth_token: str = Form(""),
+        api_key: str = Form(""),
+    ) -> RedirectResponse:
+        """Add an endpoint. It is verified first and only saved if it answers.
+
+        Saving an endpoint that fails its probe is how an operator ends up with
+        five rows and no idea which one works, so a failure is reported and
+        nothing is written. The one exception is a gateway that answers but has
+        no ``/v1/models``: that is a working endpoint reported as reachable.
+        """
+        base_url = base_url.strip().rstrip("/")
+        token = auth_token.strip() or api_key.strip()
+        if not base_url:
+            return _back("error", "端点不能为空")
+        if not token:
+            return _back("error", "令牌不能为空：端点需要 auth_token 或 api_key")
+        ok, note, models = await asyncio.to_thread(
+            model_settings.probe_models, base_url, token
+        )
+        if not ok:
+            return _back("error", f"没有保存：{note}")
+
+        from .models import Provider  # local import keeps models out of the page
+
+        provider_id = store.add_provider(
+            Provider(
+                id=0,
+                name=name.strip() or model_settings._host_label(base_url),
+                base_url=base_url,
+                auth_token=auth_token.strip(),
+                api_key=api_key.strip(),
+                models=models,
+                last_probe="ok",
+                last_probe_note=note,
+                # Same format the table's ``datetime('now')`` writes (UTC), so a
+                # row added here and one probed later sort together.
+                last_probed_at=time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
+            )
+        )
+        if store.get_setting("active_provider") in ("", "0"):
+            store.set_setting("active_provider", str(provider_id))
+        return _back("notice", f"已添加并验证：{note}")
+
+    @app.post("/api/settings/providers/import")
+    async def import_providers() -> RedirectResponse:
+        """Copy the provider rows out of a local CC Switch install.
+
+        Imported rows are matched on ``(base_url, name)`` against what is already
+        here so pressing the button twice does not double the list.
+        """
+        found, detail = await asyncio.to_thread(model_settings.import_from_ccswitch)
+        if not found:
+            return _back("error", detail)
+        existing = {
+            (p.base_url.rstrip("/"), p.name) for p in store.list_providers()
+        }
+        added = 0
+        for provider in found:
+            if (provider.base_url.rstrip("/"), provider.name) in existing:
+                continue
+            store.add_provider(provider)
+            added += 1
+        if not added:
+            return _back("notice", f"{detail}，都已经在列表里了")
+        return _back("notice", f"{detail}，新增 {added} 个")
+
+    @app.post("/api/settings/providers/{provider_id}/switch")
+    async def switch_provider(provider_id: int) -> RedirectResponse:
+        """Make one provider the active endpoint, and follow it with the models.
+
+        Applied to the running config immediately — sessions read ``cfg.models``
+        per dispatch — and written to ``config.toml`` so the next start agrees.
+        The environment is not touched: if it carries a token it still wins at
+        startup, and the page says so.
+
+        The endpoint is re-probed first, and the model assignment follows it.
+        Switching only the endpoint left the assignment pointing at the previous
+        gateway's model names: that gateway answered ``503 model_not_found`` for
+        every session, and the page's dropdowns kept offering the old list
+        because the new row had never been probed.
+        """
+        provider = store.get_provider(provider_id)
+        if provider is None:
+            return _back("error", "没有这个供应商")
+        if not provider.configured:
+            return _back("error", "这家供应商还没有端点或令牌")
+
+        ok, note, served = await asyncio.to_thread(
+            model_settings.probe_models, provider.base_url, provider.secret
+        )
+        if not ok:
+            # The endpoint's own answer, not a guess: switching to one that
+            # refuses its cheapest authenticated call would fail every session
+            # minutes into the run instead of here, in one line.
+            return _back(
+                "error",
+                f"没有切换：{provider.name or provider.base_url} 验证失败，{note}",
+            )
+        store.note_provider_probe(
+            provider_id, ok=True, note=note, models=served or None
+        )
+
+        try:
+            _write_credentials(
+                base_url=provider.base_url,
+                auth_token=provider.auth_token,
+                api_key=provider.api_key,
+            )
+        except OSError as exc:
+            return _back("error", f"写入失败：{exc}")
+
+        model_settings.apply_provider(cfg, provider, "toml")
+        store.set_setting("active_provider", str(provider_id))
+
+        roles, directions, changes = model_settings.remap_to_served(
+            served,
+            {
+                "main": cfg.models.main,
+                "worker": cfg.models.worker,
+                "verifier": cfg.models.verifier,
+                "writer": cfg.models.writer,
+            },
+            dict(cfg.models.roles),
+            priced=set(cfg.models.pricing),
+        )
+        if changes:
+            try:
+                model_settings.write_models(
+                    REPO_ROOT / "config.toml", roles=roles, directions=directions
+                )
+            except OSError as exc:
+                return _back("error", f"端点已切换，但模型分配写入失败：{exc}")
+            model_settings.apply_models(cfg, roles, directions)
+
+        message = f"已切换到 {provider.name or provider.base_url}"
+        if served:
+            message += f"（{len(served)} 个模型）"
+        if changes:
+            message += "；模型随之调整：" + "、".join(
+                f"{label} {old}→{new}" for label, old, new in changes
+            )
+        unpriced = [m for m in model_settings.assigned_models(cfg) if m not in cfg.models.pricing]
+        if unpriced:
+            message += (
+                f"；注意 {'、'.join(unpriced)} 没有 [models.pricing] 价格，"
+                "成本会按 CLI 估算"
+            )
+        return _back("notice", message)
+
+    @app.post("/api/settings/providers/{provider_id}/probe")
+    async def probe_provider(provider_id: int) -> RedirectResponse:
+        """Re-verify a provider and refresh the model list its dropdowns offer."""
+        provider = store.get_provider(provider_id)
+        if provider is None:
+            return _back("error", "没有这个供应商")
+        ok, note, models = await asyncio.to_thread(
+            model_settings.probe_models, provider.base_url, provider.secret
+        )
+        store.note_provider_probe(provider_id, ok=ok, note=note, models=models or None)
+        if ok and provider_id == model_settings.provider_id_from_state(store, cfg):
+            return _back("notice", f"{provider.name or provider.base_url}：{note}")
+        return _back("notice" if ok else "error", note)
+
+    @app.post("/api/settings/providers/{provider_id}/update")
+    async def update_provider(
+        provider_id: int,
+        name: str = Form(""),
+        base_url: str = Form(""),
+        auth_token: str = Form(""),
+        api_key: str = Form(""),
+        clear_secrets: str = Form(""),
+    ) -> RedirectResponse:
+        """Edit a provider. A blank secret keeps the stored one, like a switch."""
+        provider = store.get_provider(provider_id)
+        if provider is None:
+            return _back("error", "没有这个供应商")
+        clearing = bool(clear_secrets)
+        base_url = base_url.strip().rstrip("/")
+        store.update_provider(
+            provider_id,
+            name=name,
+            base_url=base_url,
+            auth_token="" if clearing else (auth_token.strip() or None),
+            api_key="" if clearing else (api_key.strip() or None),
+        )
+        # If the edited row is the active one, the running config follows it.
+        if provider_id == model_settings.provider_id_from_state(store, cfg):
+            updated = store.get_provider(provider_id)
+            if updated is not None:
+                model_settings.apply_provider(cfg, updated, cfg.models.credential_source or "toml")
+                try:
+                    _write_credentials(
+                        base_url=updated.base_url,
+                        auth_token=updated.auth_token,
+                        api_key=updated.api_key,
+                    )
+                except OSError:
+                    pass
+        return _back("notice", "已更新")
+
+    @app.post("/api/settings/providers/{provider_id}/delete")
+    async def delete_provider(provider_id: int) -> RedirectResponse:
+        provider = store.get_provider(provider_id)
+        if provider is None:
+            return _back("error", "没有这个供应商")
+        if store.get_setting("active_provider") == str(provider_id):
+            return _back("error", "先切到别的供应商，再删这一家")
+        store.delete_provider(provider_id)
+        return _back("notice", f"已删除 {provider.name or provider.base_url}")
+
+    @app.post("/api/settings/models/align")
+    async def align_models() -> RedirectResponse:
+        """Re-point the assignment at models the active endpoint serves.
+
+        The same move a provider switch makes, for the case a switch cannot
+        cover: the active row was adopted from ``config.toml`` with model names
+        from some other gateway, so there is no other card to switch *from*.
+        """
+        active_id = model_settings.provider_id_from_state(store, cfg)
+        provider = store.get_provider(active_id) if active_id else None
+        if provider is None:
+            return _back("error", "当前端点不在供应商列表里，先添加或验证一次")
+        served: list[str] = []
+        if provider.configured:
+            ok, note, served = await asyncio.to_thread(
+                model_settings.probe_models, provider.base_url, provider.secret
+            )
+            if ok:
+                store.note_provider_probe(
+                    provider.id, ok=True, note=note, models=served or None
+                )
+            else:
+                # A gateway that will not answer this call may still infer fine;
+                # fall back to the list its last probe returned.
+                served = list(provider.models)
+        if not served:
+            return _back(
+                "error",
+                f"拿不到 {provider.name or provider.base_url} 的模型列表：先点它的「验证」",
+            )
+        roles, directions, changes = model_settings.remap_to_served(
+            served,
+            {
+                "main": cfg.models.main,
+                "worker": cfg.models.worker,
+                "verifier": cfg.models.verifier,
+                "writer": cfg.models.writer,
+            },
+            dict(cfg.models.roles),
+            priced=set(cfg.models.pricing),
+        )
+        if not changes:
+            return _back("notice", "这家端点提供当前分配里的所有模型，不需要改")
+        try:
+            model_settings.write_models(
+                REPO_ROOT / "config.toml", roles=roles, directions=directions
+            )
+        except OSError as exc:
+            return _back("error", f"写入失败：{exc}")
+        model_settings.apply_models(cfg, roles, directions)
+        return _back(
+            "notice",
+            "已按端点调整：" + "、".join(f"{label} {old}→{new}" for label, old, new in changes),
+        )
+
+    @app.post("/api/settings/models")
+    async def save_models(request: Request) -> RedirectResponse:
+        """Save the per-role assignment, so switching models stops being an edit.
+
+        Directions arrive as ``dir_<name>`` fields (the set of directions is
+        data, not a fixed signature), and an empty value means "follow worker".
+        That value is deleted from the override table rather than stored as an
+        empty string: the page offers it as the default choice for every
+        direction, and a stored ``""`` would later read as a key nobody chose.
+        """
+        form = await request.form()
+        roles = {
+            role: str(form.get(role) or "").strip() for role in model_settings.ROLE_ORDER
+        }
+        empty = [name for name, value in roles.items() if not value]
+        if empty:
+            return _back("error", f"这些角色必须有模型：{', '.join(empty)}")
+        overrides = {}
+        for name in model_settings.DIRECTIONS:
+            value = str(form.get(f"dir_{name}") or "").strip()
+            # "Follow worker" is expressed by leaving the field empty; a browser
+            # that autofilled the placeholder, or a script that sent the label,
+            # must not turn into a model literally named 跟随/follow.
+            if value.lower() in ("follow", "inherit", "-") or value.startswith("跟随"):
+                continue
+            if value:
+                overrides[name] = value
+        try:
+            model_settings.write_models(
+                REPO_ROOT / "config.toml", roles=roles, directions=overrides
+            )
+        except OSError as exc:
+            return _back("error", f"写入失败：{exc}")
+
+        # Sessions read these per dispatch, so no restart is needed.
+        for role, value in roles.items():
+            setattr(cfg.models, role, value)
+        cfg.models.roles = overrides
+        note = f"模型分配已保存：worker={roles['worker']}"
+        if overrides:
+            note += f"，{len(overrides)} 个方向有覆盖"
+        return _back("notice", note)
 
     @app.post("/api/settings/credentials")
     async def save_credentials(

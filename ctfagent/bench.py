@@ -340,6 +340,12 @@ async def _run_one(
     on_run: Any = None,
 ) -> BenchResult:
     challenge = load_challenge(item.directory)
+    # The manifest's note is a curation warning — a known dead end, a runtime
+    # rewrite, a "this is an anchor problem". It has to reach every agent that
+    # sees this challenge, so it rides in as a hint: the same channel the
+    # challenge's own hints use. Without this the note is parsed and dropped.
+    if item.note:
+        challenge.hints = list(challenge.hints or []) + [item.note]
     challenge_id: int = store.add_challenge(challenge)
     started = time.time()
     run = await manager.start(

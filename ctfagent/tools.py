@@ -25,6 +25,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 TOOL_NAMES = [
     "dispatch_task",
+    "stop_task",
     "wait_tasks",
     "list_tasks",
     "get_task_result",
@@ -102,6 +103,27 @@ def tool_specs() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["task_ids"],
+            },
+        },
+        {
+            "name": "stop_task",
+            "description": (
+                "Stop one running task and free its worker slot. Use it when a finding has "
+                "refuted the direction, not because the task is quiet: measured over the live "
+                "database, 0-6% of a long worker's calls were duplicates, and silence was model "
+                "turnaround rather than spinning. Stopping is what turns a dead route into a "
+                "slot for a live one."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "integer"},
+                    "reason": {
+                        "type": "string",
+                        "description": "What refuted the direction; recorded on the blackboard.",
+                    },
+                },
+                "required": ["task_id"],
             },
         },
         {
@@ -264,6 +286,29 @@ class OrchestratorTools:
                     "propose_flag，或直接 finish_run 交出一份说明。"
                 )
             }
+        # An endpoint that has rejected two sessions in the last quarter of an
+        # hour will reject the next one too. That is not a direction choice and
+        # not something a different objective can fix: the model name does not
+        # exist there, or the credential is refused. Run 84 paid for five pwn
+        # sessions in a row before the run clock ended, each a three-minute
+        # gateway error. ``force`` stays available for the case where the
+        # operator says the endpoint has been fixed.
+        outage = self.run.gateway_outage()
+        if outage and not force:
+            return {
+                "error": (
+                    f"端点正在拒绝会话（最近 {outage['window_s'] // 60} 分钟内 "
+                    f"{outage['count']} 次，模型 {outage['model']}）："
+                    f"{outage['message'][:200]}。"
+                    "这不是这道题的问题，再派下去只会重复同一个失败。"
+                ),
+                "gateway_outage": outage,
+                "options": [
+                    "把这个告诉操作员（ask_user），让他到 /settings 换供应商或改模型",
+                    "确认端点已修好之后再派，并带 force=true",
+                    "先把已有结论写进黑板、finish_run 交一份说明，而不是烧掉剩下的预算",
+                ],
+            }
         # Refuse before spending: a second worker in a direction that already
         # has one running is a guess that it is stuck, and the guess has been
         # wrong every time it was made under time pressure. Run 5 paid $10.43
@@ -328,6 +373,10 @@ class OrchestratorTools:
             out["warnings"] = warnings
         out["clock"] = self.run.clock()
         return out
+
+    def stop_task(self, task_id: int, reason: str = "") -> dict[str, Any]:
+        """Cancel one task. A refuted direction must not keep its slot."""
+        return self.run.stop_task(int(task_id), reason)
 
     async def wait_tasks(self, task_ids: list[int], timeout_s: int = 240) -> dict[str, Any]:
         # One call should span a real stretch of worker time. At the old 45 s

@@ -1,12 +1,16 @@
 """Configuration: TOML file + environment overrides.
 
-Priority (highest first): environment -> config.toml -> defaults, with one
-exception: credentials and the endpoint fall back to the operator's Claude Code
-``settings.json`` when neither the environment nor ``config.toml`` sets them.
+Priority (highest first): ``CTFAGENT_*`` environment -> config.toml ->
+``ANTHROPIC_*`` environment -> the operator's Claude Code ``settings.json``.
 
-Credentials come from the environment by default because that is where the Claude
-Code CLI reads them too (``ANTHROPIC_BASE_URL`` / ``ANTHROPIC_AUTH_TOKEN`` or
-``ANTHROPIC_API_KEY``). A local Anthropic-compatible proxy is the primary setup.
+Credentials are read from the environment at all because that is where the
+Claude Code CLI reads them too (``ANTHROPIC_BASE_URL`` /
+``ANTHROPIC_AUTH_TOKEN`` or ``ANTHROPIC_API_KEY``). A local Anthropic-compatible
+proxy is the primary setup.
+
+``config.toml`` outranks the ambient ``ANTHROPIC_*`` so that an endpoint
+switched on the credentials page survives a restart (see ``_apply_env``); use
+the ``CTFAGENT_*`` names to override the file from a terminal.
 
 The ``settings.json`` fallback exists because sessions run with
 ``setting_sources=["project"]``, so the child CLI never reads that file: a
@@ -343,6 +347,22 @@ class LimitsConfig:
     #: and the verifier outlives the close, its verdict still recorded.
     confirm_verifier_wait_s: int = 90
     task_timeout_s: int = 1800
+    #: Per-category overrides for the per-task wall clock (``task_timeout_s``).
+    #: Real competition reverse binaries are noisy — unpacking, tracing, writing
+    #: a decryptor — and the default 30 min killed every reverse worker on
+    #: easyrs three runs running while they were still making progress. A
+    #: category not listed here falls back to ``task_timeout_s``.
+    task_timeout_s_by_category: dict[str, int] = field(
+        default_factory=lambda: {"reverse": 3600}
+    )
+    #: Wall clock for the roles that close a run a value has already been found
+    #: for (verifier, writer), capped separately from the challenge's clock.
+    #:
+    #: They inherited ``task_timeout_s_by_category`` like every other task, so on
+    #: a reverse challenge a verifier that reproduces *one value* was entitled to
+    #: the same hour the reverse worker got. Reproducing a flag is bounded work;
+    #: a verifier still running after twenty minutes has stopped verifying.
+    closing_task_timeout_s: int = 1200
     #: How many times the *same* tool call may be repeated before a worker is
     #: stopped. 0 disables it.
     #:
@@ -451,39 +471,61 @@ class AppConfig:
 
 
 def _apply_env(cfg: AppConfig) -> AppConfig:
-    # The operator's Claude Code settings are the last resort, not an override:
-    # an explicit environment or config.toml value always wins. ``from_toml`` is
-    # what the file already supplied, so the provenance reported to the UI names
-    # the layer that actually won.
+    # Precedence, highest first:
+    #   CTFAGENT_* (this app's own variables)
+    #   config.toml  (what the credentials page writes on "切换")
+    #   ANTHROPIC_* in the environment
+    #   the operator's ~/.claude/settings.json
+    #
+    # ``config.toml`` sits above the ambient ``ANTHROPIC_*`` on purpose. The
+    # credentials page's promise is that a switch survives a restart; if a token
+    # exported in the terminal that launched the server silently won at every
+    # start, "切换" would look saved and then revert — the exact confusion the
+    # page exists to end. An operator who wants the environment to win can still
+    # use ``CTFAGENT_AUTH_TOKEN`` / ``CTFAGENT_BASE_URL``, which are explicit.
+    #
+    # ``from_toml`` is what the file supplied before the environment is
+    # consulted, so the provenance reported to the UI names the layer that
+    # actually won.
     settings_env = _claude_settings_env()
-    from_toml = (cfg.models.auth_token, cfg.models.api_key)
+    from_toml = (cfg.models.base_url, cfg.models.auth_token, cfg.models.api_key)
+    explicit = any(
+        os.environ.get(name)
+        for name in (
+            "CTFAGENT_BASE_URL",
+            "CTFAGENT_AUTH_TOKEN",
+            "CTFAGENT_API_KEY",
+        )
+    )
+    from_env = any(
+        os.environ.get(name)
+        for name in (
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_API_KEY",
+        )
+    )
     cfg.models.base_url = (
-        _env("CTFAGENT_BASE_URL", cfg.models.base_url)
+        _env("CTFAGENT_BASE_URL", "")
+        or cfg.models.base_url
         or _env("ANTHROPIC_BASE_URL", "")
         or settings_env.get("ANTHROPIC_BASE_URL", "")
     )
     cfg.models.auth_token = (
-        _env("CTFAGENT_AUTH_TOKEN", cfg.models.auth_token)
+        _env("CTFAGENT_AUTH_TOKEN", "")
+        or cfg.models.auth_token
         or _env("ANTHROPIC_AUTH_TOKEN", "")
         or settings_env.get("ANTHROPIC_AUTH_TOKEN", "")
     )
     cfg.models.api_key = (
-        _env("CTFAGENT_API_KEY", cfg.models.api_key)
+        _env("CTFAGENT_API_KEY", "")
+        or cfg.models.api_key
         or _env("ANTHROPIC_API_KEY", "")
         or settings_env.get("ANTHROPIC_API_KEY", "")
     )
-    env_creds = any(
-        os.environ.get(name)
-        for name in (
-            "CTFAGENT_AUTH_TOKEN",
-            "ANTHROPIC_AUTH_TOKEN",
-            "CTFAGENT_API_KEY",
-            "ANTHROPIC_API_KEY",
-        )
-    )
     if cfg.models.auth_token or cfg.models.api_key:
         cfg.models.credential_source = (
-            "env" if env_creds
+            "env" if explicit or (from_env and not any(from_toml))
             else "toml" if any(from_toml)
             else "settings"
         )
@@ -628,6 +670,8 @@ distill_on_confirm = false
 # 验证器活到关闭之后，结论仍会记到 flag 上。设 0 可完全跳过等待。
 confirm_verifier_wait_s = 90
 task_timeout_s = 1800
+# 逆向题（真实比赛二进制）比默认值需要更多时间；未列出的 category 用 task_timeout_s。
+task_timeout_s_by_category = { reverse = 3600 }
 stall_timeout_s = 300
 # Silence while a tool runs is not a hang; this clock is longer on purpose.
 tool_wait_timeout_s = 900

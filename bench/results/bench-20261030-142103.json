@@ -1,0 +1,118 @@
+{
+  "created_at": "2026-10-30T08:50:46+00:00",
+  "summary": {
+    "items": 5,
+    "solved": 4,
+    "verified": 4,
+    "solve_rate": 0.8,
+    "cost_usd": 2.4105,
+    "cost_per_solve_usd": 0.6026,
+    "elapsed_s": 8981.7,
+    "peak_hours": true,
+    "library": "",
+    "notes": "（未使用训练笔记）",
+    "bench_db": "C:\\Users\\20132\\AppData\\Local\\Temp\\ctfagent-bench-0sb5blre\\bench.db"
+  },
+  "results": [
+    {
+      "name": "easyrs",
+      "category": "reverse",
+      "run_id": 1,
+      "status": "failed",
+      "solved": false,
+      "hit": false,
+      "verified_hit": false,
+      "matched_value": "",
+      "expected": "96b30dd3d5f0ec32ecdf3147fe8d39ce",
+      "cost_usd": 1.1042,
+      "elapsed_s": 5593.0,
+      "tasks": 5,
+      "flag_statuses": [],
+      "error": ""
+    },
+    {
+      "name": "n17",
+      "category": "crypto",
+      "run_id": 2,
+      "status": "stopped",
+      "solved": true,
+      "hit": true,
+      "verified_hit": true,
+      "matched_value": "8a6179153fd89b40b1eac51e3bc6825f",
+      "expected": "8a6179153fd89b40b1eac51e3bc6825f",
+      "cost_usd": 0.3512,
+      "elapsed_s": 978.8,
+      "tasks": 2,
+      "flag_statuses": [
+        [
+          "8a6179153fd89b40b1eac51e3bc6825f",
+          "verified"
+        ]
+      ],
+      "error": ""
+    },
+    {
+      "name": "lcg_step",
+      "category": "crypto",
+      "run_id": 3,
+      "status": "stopped",
+      "solved": true,
+      "hit": true,
+      "verified_hit": true,
+      "matched_value": "987654321",
+      "expected": "987654321",
+      "cost_usd": 0.2171,
+      "elapsed_s": 504.9,
+      "tasks": 2,
+      "flag_statuses": [
+        [
+          "987654321",
+          "verified"
+        ]
+      ],
+      "error": ""
+    },
+    {
+      "name": "aes_pin",
+      "category": "crypto",
+      "run_id": 4,
+      "status": "stopped",
+      "solved": true,
+      "hit": true,
+      "verified_hit": true,
+      "matched_value": "flag{6_d1g1t_p1n_1s_n0t_a_k3y}",
+      "expected": "flag{6_d1g1t_p1n_1s_n0t_a_k3y}",
+      "cost_usd": 0.2413,
+      "elapsed_s": 582.1,
+      "tasks": 2,
+      "flag_statuses": [
+        [
+          "flag{6_d1g1t_p1n_1s_n0t_a_k3y}",
+          "verified"
+        ]
+      ],
+      "error": ""
+    },
+    {
+      "name": "crackme_z3",
+      "category": "reverse",
+      "run_id": 5,
+      "status": "stopped",
+      "solved": true,
+      "hit": true,
+      "verified_hit": true,
+      "matched_value": "Z3s0lv3sTh3K3y!!",
+      "expected": "Z3s0lv3sTh3K3y!!",
+      "cost_usd": 0.4967,
+      "elapsed_s": 1322.9,
+      "tasks": 2,
+      "flag_statuses": [
+        [
+          "Z3s0lv3sTh3K3y!!",
+          "verified"
+        ]
+      ],
+      "error": ""
+    }
+  ]
+}

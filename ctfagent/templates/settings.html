@@ -7,8 +7,10 @@
     <div>
       <h1>模型凭据</h1>
       <p class="lede">
-        这里是所有执行者共用的那个端点和令牌。改完立刻生效，不用重启服务。
-        令牌只显示后四位 —— 页面截图、投屏都不会泄露它。
+        供应商是你试过的那些端点，每家一行。点「切换」即改用那一家 ——
+        正在跑的会话不受影响，下一次派活就用新端点，不用重启；
+        新端点不提供那些模型名时会一并换成它提供的，并在这里告诉你换了什么。
+        令牌只显示后四位，页面截图、投屏都不会泄露它。
       </p>
     </div>
   </header>
@@ -16,11 +18,204 @@
   {% if notice %}<div class="banner ok">{{ notice }}</div>{% endif %}
   {% if error %}<div class="banner bad">{{ error }}</div>{% endif %}
 
+  {% if creds.env_wins %}
+  <div class="banner bad">
+    当前令牌来自环境变量（<code>CTFAGENT_AUTH_TOKEN</code> / <code>CTFAGENT_API_KEY</code>）。
+    它的优先级高于这里保存的值：下面切换的供应商本次运行会生效，但下次启动仍会被它覆盖。
+    要让切换长期生效，启动服务前去掉那个环境变量。
+  </div>
+  {% endif %}
+
+  <section class="card">
+    <h2>供应商</h2>
+
+    {% if not providers %}
+    <div class="empty big">
+      <b>还没有保存过任何端点</b>
+      下面填一个 Anthropic 兼容网关的根地址和令牌，系统会先调一次
+      <code>/v1/models</code> 验证，通过了才保存。<br>
+      装过 CC Switch 的话，也可以按「从 CC Switch 导入」一次搬过来。
+    </div>
+    {% else %}
+    <ul class="prov-list">
+      {% for p in providers %}
+      <li class="prov{% if p.active %} on{% endif %}">
+        <div class="prov-main">
+          <div class="prov-name">
+            {{ p.name }}
+            {% if p.active %}<span class="stamp st-active">使用中</span>{% endif %}
+            {% if p.last_probe == 'ok' %}<span class="stamp st-verified">已验证</span>
+            {% elif p.last_probe == 'failed' %}<span class="stamp st-failed">验证失败</span>
+            {% else %}<span class="stamp st-queued-task">未验证</span>{% endif %}
+            {% if p.imported_from == 'ccswitch' %}<span class="stamp st-note">来自 CC Switch</span>
+            {% elif p.imported_from == 'config.toml' %}<span class="stamp st-note">来自 config.toml</span>{% endif %}
+          </div>
+          <div class="prov-meta mono">
+            {{ p.base_url }}
+            <span class="sep">·</span>
+            {% if p.has_secret %}{{ p.masked }}{% else %}无令牌{% endif %}
+            <span class="sep">·</span>
+            {% if p.model_count %}{{ p.model_count }} 个模型{% else %}模型列表未知{% endif %}
+          </div>
+          {% if p.last_probe_note %}
+          <div class="prov-note">最近验证：{{ p.last_probe_note }}{% if p.last_probed_at %} · {{ p.last_probed_at }}{% endif %}</div>
+          {% endif %}
+        </div>
+        <div class="prov-actions">
+          {% if not p.active %}
+          <form method="post" action="/api/settings/providers/{{ p.id }}/switch">
+            <button class="small" type="submit">切换</button>
+          </form>
+          {% endif %}
+          <form method="post" action="/api/settings/providers/{{ p.id }}/probe">
+            <button class="small" type="submit">验证</button>
+          </form>
+          {% if not p.active %}
+          <form method="post" action="/api/settings/providers/{{ p.id }}/delete" class="delete-run">
+            <button class="danger small" type="submit"
+                    data-arm="确认删除">删除</button>
+          </form>
+          {% endif %}
+        </div>
+
+        <details class="prov-edit">
+          <summary>编辑</summary>
+          <form method="post" action="/api/settings/providers/{{ p.id }}/update" class="form-narrow">
+            <div class="field">
+              <label for="p-name-{{ p.id }}">名称</label>
+              <input id="p-name-{{ p.id }}" name="name" value="{{ p.name }}">
+            </div>
+            <div class="field">
+              <label for="p-url-{{ p.id }}">端点 base_url</label>
+              <input id="p-url-{{ p.id }}" name="base_url" value="{{ p.base_url }}"
+                     placeholder="https://fastmodel.top">
+              <p class="hint">Anthropic 兼容网关的根地址，不要带 <code>/v1</code>。</p>
+            </div>
+            <div class="field">
+              <label for="p-token-{{ p.id }}">auth_token</label>
+              <input id="p-token-{{ p.id }}" name="auth_token" type="password"
+                     autocomplete="off"
+                     placeholder="{% if p.has_secret %}已设置（{{ p.masked }}），留空则不修改{% else %}未设置{% endif %}">
+            </div>
+            <div class="field">
+              <label for="p-key-{{ p.id }}">api_key</label>
+              <input id="p-key-{{ p.id }}" name="api_key" type="password"
+                     autocomplete="off" placeholder="多数网关不需要填">
+            </div>
+            <div class="field field-actions">
+              <button class="small" type="submit">保存这一行</button>
+            </div>
+          </form>
+          <p class="hint">
+            改完端点后点「验证」刷新模型列表 —— 下面的模型下拉框用的是那一次探测的结果。
+            {% if p.active %}这一行正在使用，保存会同时更新 <code>config.toml</code>。{% endif %}
+          </p>
+        </details>
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+
+    <form method="post" action="/api/settings/providers" class="grid-3 prov-add">
+      <div class="field">
+        <label for="n-name">名称</label>
+        <input id="n-name" name="name" placeholder="例如：fastmodel / 本机代理">
+      </div>
+      <div class="field">
+        <label for="n-url">端点 base_url</label>
+        <input id="n-url" name="base_url" required placeholder="https://fastmodel.top">
+      </div>
+      <div class="field">
+        <label for="n-token">令牌</label>
+        <input id="n-token" name="auth_token" type="password" autocomplete="off"
+               placeholder="Anthropic 兼容网关的 token">
+      </div>
+      <div class="field field-actions">
+        <button class="primary" type="submit">验证并添加</button>
+      </div>
+    </form>
+    <div class="row prov-import">
+      <form method="post" action="/api/settings/providers/import">
+        <button class="small" type="submit">从 CC Switch 导入</button>
+      </form>
+      <span class="hint">
+        读本机 <code>~/.cc-switch/cc-switch.db</code> 里已有的 Claude 供应商（只读，
+        不会改 CC Switch）。同一个端点重复导入会跳过。
+      </span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>模型分配</h2>
+    {% if active_provider and active_provider.models %}
+    <p class="hint">
+      下拉框里是 <span class="mono">{{ active_provider.name }}</span> 上一次验证时返回的
+      {{ active_provider.model_count }} 个模型；也可以直接输入列表里没有的名字。
+      切换供应商时，新端点不提供的模型会自动换成它提供的那一档 ——
+      换了端点还用旧模型名，第一次派活就会被网关以「模型不存在」打回。
+    </p>
+    {% else %}
+    <p class="hint">
+      当前端点的模型列表还没探到（点上面的「验证」可以刷新）。可以直接输入模型名。
+    </p>
+    {% endif %}
+
+    <form method="post" action="/api/settings/models">
+      <datalist id="model-list">
+        {% for m in model_choices %}<option value="{{ m }}">{% endfor %}
+      </datalist>
+      <div class="models-grid">
+        {% for role in role_order %}
+        <div class="field">
+          <label for="m-{{ role }}">{{ role | role_label }}</label>
+          <input id="m-{{ role }}" name="{{ role }}" list="model-list"
+                 value="{{ role_view[role] }}" spellcheck="false" required>
+        </div>
+        {% endfor %}
+      </div>
+
+      <details class="dirs">
+        <summary>
+          方向覆盖
+          {% if role_view.roles %}<span class="hint">（{{ role_view.roles | length }} 个方向单独指定）</span>{% endif %}
+        </summary>
+        <p class="hint">
+          留空 = 跟随 worker。逆向、pwn 这类推理密集的方向值得单独给一个更强的模型，
+          代价是每轮更慢 —— 先用一个方向验证再全量切。
+        </p>
+        <div class="models-grid">
+          {% for name, label in directions %}
+          <div class="field">
+            <label for="d-{{ name }}">{{ label }}</label>
+            <input id="d-{{ name }}" name="dir_{{ name }}" list="model-list"
+                   value="{{ role_view.roles.get(name, '') }}"
+                   placeholder="跟随 worker" spellcheck="false">
+          </div>
+          {% endfor %}
+        </div>
+      </details>
+
+      <div class="field field-actions">
+        <button class="primary" type="submit">保存分配</button>
+        <span class="hint">保存即生效，下一次派活就用新模型。</span>
+      </div>
+    </form>
+    <form method="post" action="/api/settings/models/align" class="row">
+      <button class="small" type="submit">按当前端点重排模型</button>
+      <span class="hint">
+        把这家端点不提供的模型名换成它提供的（强推理角色换到强的一档，其余换到快的一档）。
+        端点和模型名对不上时，第一个任务会直接被网关以「模型不存在」打回 —— 用这个按钮一次改齐。
+      </span>
+    </form>
+  </section>
+
   <section class="card">
     <h2>当前生效</h2>
     <dl class="kv">
       <dt>来源</dt>
       <dd>{{ creds.source_label }}{% if not creds.source %}（未配置）{% endif %}</dd>
+      <dt>供应商</dt>
+      <dd>{% if active_provider %}{{ active_provider.name }}{% else %}未从列表选择{% endif %}</dd>
       <dt>端点</dt>
       <dd class="mono">{{ creds.base_url or 'CLI 默认端点' }}</dd>
       <dt>协议</dt>
@@ -30,37 +225,61 @@
       <dt>api_key</dt>
       <dd class="mono">{% if creds.has_api_key %}{{ creds.api_key_masked }}{% else %}未设置{% endif %}</dd>
     </dl>
+  </section>
 
-    {% if creds.env_wins %}
+  <section class="card">
+    <h2>写到哪儿</h2>
     <p class="hint">
-      <b>注意：当前令牌来自环境变量。</b>环境变量优先级高于 config.toml ——
-      这里保存的值本次运行会生效，但下次启动时仍会被环境变量覆盖。
-      要让它长期生效，先清掉 <code>ANTHROPIC_AUTH_TOKEN</code> /
-      <code>ANTHROPIC_API_KEY</code> 环境变量。
+      供应商列表存在本机的数据库里；切换供应商、保存模型分配会同时写进
+      <span class="mono">{{ config_path }}</span>：端点和令牌、四个角色的模型在
+      <code>[models]</code>，方向覆盖在 <code>[models.roles]</code>，
+      文件里其它注释和配置保持原样。
+      写入后这些值也立刻刷新到运行中的配置 —— 重启后读的是这份文件，
+      所以切换会保留（<code>CTFAGENT_*</code> 环境变量除外）。
+    </p>
+    <p class="hint">
+      <b>这个文件是明文的。</b>它和 <code>~/.claude/settings.json</code> 一样，
+      任何能读你主目录的进程都能读到令牌。不要把这个文件提交到仓库，
+      也不要把本页截图发出去 —— 页面本身只显示后四位，但文件里是全文。
+    </p>
+    {% if creds.unpriced %}
+    <p class="hint">
+      <b>这些模型没有价格：</b><span class="mono">{{ creds.unpriced | join('、') }}</span>。
+      <code>[models.pricing]</code> 里没有它们的费率，所以成本用的是 CLI 按 Anthropic
+      价目表估的数 —— 对网关模型不准，运行预算的上限因此不可信。
+      在 <code>config.toml</code> 里补上 <code>input / cache_read / output</code>
+      （每百万 token 美元）后重启即可。
+    </p>
+    {% endif %}
+    {% if not creds.pricing_configured %}
+    <p class="hint">
+      顺带一提：<code>[models.pricing]</code> 还没配，所以成本显示是 CLI 按 Anthropic
+      价目表估的，对网关模型不准。<code>ctfagent cost</code> 会提醒这件事。
     </p>
     {% endif %}
   </section>
 
-  <section class="card">
-    <h2>修改</h2>
+  <details class="card advanced">
+    <summary>直接改 config.toml 的端点与令牌（不经过供应商列表）</summary>
+    <p class="hint">
+      给临时试一个端点用。这里保存的值不会出现在上面的列表里，
+      下次打开页面时会作为一个「来自 config.toml」的供应商被收编。
+    </p>
     <form method="post" action="/api/settings/credentials" class="form-narrow">
       <div class="field">
         <label for="s-url">端点 base_url</label>
         <input id="s-url" name="base_url" value="{{ creds.base_url }}"
                placeholder="https://fastmodel.top（留空 = 用 CLI 默认）">
-        <p class="hint">Anthropic 兼容网关的根地址，不要带 <code>/v1</code>。</p>
       </div>
       <div class="field">
         <label for="s-token">auth_token</label>
         <input id="s-token" name="auth_token" type="password" autocomplete="off"
                placeholder="{% if creds.has_auth_token %}已设置（{{ creds.auth_token_masked }}），留空则不修改{% else %}未设置{% endif %}">
-        <p class="hint">多数网关用这个；会作为 <code>ANTHROPIC_AUTH_TOKEN</code> 传给子会话。</p>
       </div>
       <div class="field">
         <label for="s-key">api_key</label>
         <input id="s-key" name="api_key" type="password" autocomplete="off"
                placeholder="{% if creds.has_api_key %}已设置（{{ creds.api_key_masked }}），留空则不修改{% else %}未设置{% endif %}">
-        <p class="hint">只在网关要 <code>ANTHROPIC_API_KEY</code> 时填。两个都填时以网关实际接受的为准。</p>
       </div>
       <div class="field">
         <label class="check">
@@ -69,55 +288,15 @@
         </label>
       </div>
       <div class="field field-actions">
-        <button class="primary" type="submit">保存</button>
+        <button class="small" type="submit">保存</button>
       </div>
     </form>
-
     <form method="post" action="/api/settings/probe" class="row">
-      <button class="btn" type="submit">验证连接</button>
+      <button class="btn small" type="submit">验证当前端点</button>
       <span class="hint">
         调一次 <code>/v1/models</code>，不产生推理费用。只看端点和令牌能不能通。
       </span>
     </form>
-  </section>
-
-  <section class="card">
-    <h2>模型分配</h2>
-    <dl class="kv">
-      <dt>主 agent</dt><dd class="mono">{{ creds.main }}</dd>
-      <dt>worker</dt><dd class="mono">{{ creds.worker }}</dd>
-      <dt>verifier</dt><dd class="mono">{{ creds.verifier }}</dd>
-      <dt>writer</dt><dd class="mono">{{ creds.writer }}</dd>
-    </dl>
-    {% if creds.roles %}
-    <p class="hint">
-      方向覆盖：
-      {% for role, model in creds.roles.items() %}<span class="mono">{{ role }}={{ model }}</span>{% if not loop.last %} · {% endif %}{% endfor %}
-    </p>
-    {% endif %}
-    <p class="hint">
-      这一项在 <code>config.toml</code> 的 <code>[models]</code> 里改，本页只读。
-      改完 <code>ctfagent doctor</code> 能看到实际生效的分配。
-    </p>
-  </section>
-
-  <section class="card">
-    <h2>写到哪里</h2>
-    <p class="hint">
-      保存会写进 <span class="mono">{{ config_path }}</span> 的 <code>[models]</code> 段，
-      文件里其它注释和配置保持原样。
-    </p>
-    <p class="hint">
-      <b>这个文件是明文的。</b>它和 <code>~/.claude/settings.json</code> 一样，
-      任何能读你主目录的进程都能读到令牌。不要把这个文件提交到仓库，
-      也不要把本页截图发出去 —— 页面本身只显示后四位，但 <code>config.toml</code> 里是全文。
-    </p>
-    {% if not creds.pricing_configured %}
-    <p class="hint">
-      顺带一提：<code>[models.pricing]</code> 还没配，所以成本显示是 CLI 按 Anthropic
-      价目表估的，对网关模型不准。<code>ctfagent cost</code> 会提醒这件事。
-    </p>
-    {% endif %}
-  </section>
+  </details>
 </div>
 {% endblock %}

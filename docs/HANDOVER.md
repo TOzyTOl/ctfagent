@@ -66,8 +66,8 @@
 | 规模 | `ctfagent/` 包 33 个文件 / 17,307 行（其中 `ctfagent/kit/` 6 个文件 / 1,323 行），前端 5,833 行（`app.css` 2,848 + `app.js` 1,906 + templates 1,079，无构建），测试 38 个文件 / 9,220 行 |
 | 测试 | **426 passed / 1 skipped**，全部离线可跑（`ScriptedBackend`，不烧钱） |
 | 模型 | `fastmodel.top` 网关，`deepseek-v4-flash`（默认）与 `deepseek-v4-pro`（推理方向） |
-| 历史成绩 | 15 次真实运行，解出 3 次（约 20%） |
-| 最大短板 | 基准 8 题已建，**只跑过锚点 1 题**（lcg_step 解出，但它那次报告被 CLI 崩掉，只剩重建件） |
+| 历史成绩 | 主库 66 次运行、13 次 solved（约 20%）；**8 题基准已解 5 题**，均值 $2.97/题 |
+| 最大短板 | 基准还差 **3 题**：`easyrs`（两次失败，$17.43）、`n17`、`rsa_wiener`。补跑方案见 `docs/交接-20261030-baseline补跑.md` |
 | 最大风险 | 无进程隔离（`guard.py` 是黑名单，`sandbox.mode=docker` 只是提示词开关） |
 
 **接手后第一件事**：`./start.sh`（Git Bash）或 `.\start.ps1`（PowerShell）起服务，打开

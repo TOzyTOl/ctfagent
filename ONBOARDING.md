@@ -48,13 +48,25 @@ uv pip install --python .venv\Scripts\python.exe pwntools z3-solver gmpy2 pycryp
 模型走 Anthropic 兼容网关。**注册你自己的账号和 token**——共用一个账号意味着
 额度互相烧、一方超额双方都停。
 
+最省事的办法是起服务后打开 **凭据页**（`http://127.0.0.1:8788/settings`）：
+填一次端点 + 令牌，它会先调 `/v1/models` 验证、把网关实际提供的模型列出来，
+再在「模型分配」里按角色下拉选。试过的端点都会留成供应商卡片，以后换模型/换网关
+点一下「切换」即可，下一次派活就生效，不用重启。装过 CC Switch 的话按
+「从 CC Switch 导入」可以一次把已有的 Claude 供应商搬过来。
+
+也可以继续用环境变量（临时覆盖文件里的值，启动前设置）：
+
 ```powershell
 $env:ANTHROPIC_BASE_URL   = "https://fastmodel.top"      # 或你自己的网关
 $env:ANTHROPIC_AUTH_TOKEN = "<你的 token>"
 ```
 
-要长期生效就写进 `%USERPROFILE%\.claude\settings.json` 的 `env` 段（服务会把
-它转发给子会话）。
+优先级从高到低：`CTFAGENT_*` 环境变量 → `config.toml`（凭据页写的就是它）→
+`ANTHROPIC_*` 环境变量 → `%USERPROFILE%\.claude\settings.json` 的 `env` 段
+（服务会把它转发给子会话）。
+
+> `config.toml` 排在 `ANTHROPIC_*` 之前是有意的：否则终端里敲的旧变量会在每次
+> 启动时悄悄覆盖掉凭据页上刚切换的网关。要让环境变量压过文件，用 `CTFAGENT_*`。
 
 ## 4. 自检与启动
 

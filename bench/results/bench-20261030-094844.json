@@ -1,0 +1,55 @@
+{
+  "created_at": "2026-10-30T03:24:17+00:00",
+  "summary": {
+    "items": 2,
+    "solved": 1,
+    "verified": 1,
+    "solve_rate": 0.5,
+    "cost_usd": 3.5989,
+    "cost_per_solve_usd": 3.5989,
+    "elapsed_s": 5732.9,
+    "peak_hours": true,
+    "library": "",
+    "notes": "（未使用训练笔记）",
+    "bench_db": ""
+  },
+  "results": [
+    {
+      "name": "easyrs",
+      "category": "reverse",
+      "run_id": 1,
+      "status": "failed",
+      "solved": false,
+      "hit": false,
+      "verified_hit": false,
+      "matched_value": "",
+      "expected": "96b30dd3d5f0ec32ecdf3147fe8d39ce",
+      "cost_usd": 0.9583,
+      "elapsed_s": 5144.0,
+      "tasks": 2,
+      "flag_statuses": [],
+      "error": ""
+    },
+    {
+      "name": "n17",
+      "category": "crypto",
+      "run_id": 2,
+      "status": "stopped",
+      "solved": true,
+      "hit": true,
+      "verified_hit": true,
+      "matched_value": "8a6179153fd89b40b1eac51e3bc6825f",
+      "expected": "8a6179153fd89b40b1eac51e3bc6825f",
+      "cost_usd": 2.6406,
+      "elapsed_s": 588.9,
+      "tasks": 2,
+      "flag_statuses": [
+        [
+          "8a6179153fd89b40b1eac51e3bc6825f",
+          "verified"
+        ]
+      ],
+      "error": ""
+    }
+  ]
+}

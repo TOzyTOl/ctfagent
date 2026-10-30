@@ -75,6 +75,40 @@ def test_environment_wins_over_settings_file(tmp_path, monkeypatch) -> None:
     assert cfg.models.credential_source == "env"
 
 
+def test_config_toml_wins_over_the_ambient_environment(monkeypatch) -> None:
+    """A provider switched on the page survives a restart.
+
+    The credentials page writes ``config.toml`` and says the switch is saved. It
+    only stays saved if the file outranks an ``ANTHROPIC_*`` exported in the
+    terminal that started the server — otherwise every restart silently went back
+    to the old endpoint while the page still showed the new one.
+    """
+    monkeypatch.delenv("CTFAGENT_AUTH_TOKEN", raising=False)
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "from-env")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://env.example")
+
+    base = AppConfig()
+    base.models.auth_token = "from-toml"
+    base.models.base_url = "https://toml.example"
+
+    cfg = _apply_env(base)
+    assert cfg.models.auth_token == "from-toml"
+    assert cfg.models.base_url == "https://toml.example"
+    assert cfg.models.credential_source == "toml"
+
+
+def test_ctfagent_env_still_outranks_config_toml(monkeypatch) -> None:
+    """The app's own variables stay the explicit override."""
+    monkeypatch.setenv("CTFAGENT_AUTH_TOKEN", "explicit")
+
+    base = AppConfig()
+    base.models.auth_token = "from-toml"
+
+    cfg = _apply_env(base)
+    assert cfg.models.auth_token == "explicit"
+    assert cfg.models.credential_source == "env"
+
+
 def test_broken_settings_file_is_not_an_error(tmp_path, monkeypatch) -> None:
     (tmp_path / "settings.json").write_text("{not json", encoding="utf-8")
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))

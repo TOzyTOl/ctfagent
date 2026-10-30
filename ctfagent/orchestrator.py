@@ -25,6 +25,7 @@ summary.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -43,6 +44,7 @@ from .backend import (
     AgentEvent,
     SessionSpec,
     auth_error_message,
+    gateway_error,
     spawn_error_message,
 )
 from .challenge import challenge_block, no_proxy_value
@@ -446,6 +448,19 @@ class Run:
         #: ``cost_usd 0.0`` for every running task and dispatched a second
         #: reverse worker as a hedge, paying twice for one direction.
         self._live: dict[int, dict[str, Any]] = {}
+        #: ``(when, model, message)`` for sessions the endpoint refused with its
+        #: own error (503 / model_not_found / auth). Two inside
+        #: ``gateway_outage``'s window stop new dispatches: retrying a model the
+        #: endpoint does not serve is the same certain failure, paid again. Six
+        #: tasks in runs 83/84 died that way, three minutes each.
+        self._gateway_failures: list[tuple[float, str, str]] = []
+        #: Models already warned about, so the event rail says it once.
+        self._gateway_warned: set[str] = set()
+        #: task id -> what the lead saw on its previous ``wait_tasks``. ``tools``
+        #: alone cannot answer "is it still working": the lead wakes every few
+        #: minutes and reads the same number twice, which looks identical to a
+        #: frozen worker. The delta against this snapshot is the answer.
+        self._lead_seen: dict[int, dict[str, Any]] = {}
         #: task id -> its tool-call count when it last recorded a fact. The gap
         #: is what `limits.no_progress_tools` measures, when that opt-in guard is
         #: enabled. Off by default: distinct work is not waste.
@@ -827,6 +842,15 @@ class Run:
             status = RunStatus.FAILED
         if status not in allowed:
             status = RunStatus.FAILED
+        if status == RunStatus.SOLVED:
+            # The lead does not get the last word on victory. A verifier-
+            # reproduced flag already parks the run in needs_input; a lead
+            # calling finish_run(solved) on top of that (observed on the
+            # lcg_step experiment run — the gate was documented as "the
+            # operator confirms" and the lead stepped over it) would close
+            # the run without a human decision. Coerced to needs_input: the
+            # operator's confirm is what turns a run solved.
+            status = RunStatus.NEEDS_INPUT
         self._finish_status = status
         self._finish_summary = summary
         self._accepting = False
@@ -1579,6 +1603,23 @@ class Run:
         """The ceiling handed to the SDK, in CLI dollars."""
         return self._budget_parts(role, resume_spent, exclude)[0]
 
+    def _task_clock(self, role: str) -> int:
+        """The wall clock one task of ``role`` gets, in seconds.
+
+        Keyed by the challenge's category, with one correction: a verifier
+        reproduces a single value and a writer writes one report. Neither is
+        doing the challenge's work, so inheriting a reverse challenge's clock
+        gave a verifier the same hour the reverse worker had — for work that is
+        bounded by construction.
+        """
+        category = (self.challenge.category or "").lower()
+        seconds = self.cfg.limits.task_timeout_s_by_category.get(
+            category, self.cfg.limits.task_timeout_s
+        )
+        if role in CLOSING_ROLES:
+            seconds = min(seconds, self.cfg.limits.closing_task_timeout_s)
+        return int(seconds)
+
     def _task_turns(self, role: str) -> int:
         limits = self.cfg.limits
         return limits.role_max_turns.get(role, limits.task_max_turns)
@@ -1833,6 +1874,104 @@ class Run:
         self._tasks[task.id] = asyncio.create_task(self._run_task(task.id))
         return task
 
+    def _note_gateway_failure(
+        self, task: Any, payload: dict[str, Any], last_text: str
+    ) -> str:
+        """Record an endpoint-level failure and return its text, or ``""``.
+
+        The result payload says ``subtype: success`` with ``is_error: true`` and
+        the gateway's message as the *text*, so nothing in the status told the
+        lead this was infrastructure. It read as "the pwn attempt failed" and
+        dispatched pwn again — four times in run 84, three minutes each, all to
+        a model the endpoint does not serve.
+        """
+        text = " ".join(
+            str(payload.get("result") or last_text or "").split()
+        )
+        message = gateway_error(text)
+        if not message:
+            return ""
+        role = str(getattr(task, "role", "") or "")
+        model = self.cfg.models.model_for(role) if role else self.cfg.models.main
+        self._gateway_failures.append((time.time(), model, message))
+        del self._gateway_failures[:-20]
+        if model not in self._gateway_warned:
+            self._gateway_warned.add(model)
+            self._emit(
+                "run.warning",
+                {
+                    "kind": "gateway_error",
+                    "model": model,
+                    "message": (
+                        f"端点拒绝了这个模型（{model}）：{message[:200]} "
+                        "这不是题目难度问题，也不是这个方向走不通。到 /settings "
+                        "换供应商或把模型改成端点提供的名字；修好之前继续派工只会"
+                        "重复同一个必然失败。"
+                    ),
+                },
+            )
+        return message
+
+    def gateway_outage(self, window_s: float = 900.0) -> dict[str, Any]:
+        """Recent endpoint rejections, when there are enough to stop dispatching."""
+        now = time.time()
+        recent = [f for f in self._gateway_failures if now - f[0] <= window_s]
+        if len(recent) < 2:
+            return {}
+        _, model, message = recent[-1]
+        return {
+            "count": len(recent),
+            "model": model,
+            "message": message,
+            "window_s": int(window_s),
+        }
+
+    def stop_task(self, task_id: int, reason: str = "") -> dict[str, Any]:
+        """Cancel one task and free its worker slot.
+
+        The lead could open directions but not close them: a direction whose
+        premise a later finding had already refuted kept its slot and its wall
+        clock until the clock reaped it — on a 45-minute clock that is most of
+        a four-slot run spent on a route the blackboard marks as dead. Stopping
+        is what turns a refutation into a freed slot.
+
+        The task is closed as STOPPED by ``_run_task``'s own cancellation
+        handler, so this returns before that has happened; the next
+        ``wait_tasks`` reports it terminal.
+        """
+        task = self.store.get_task(int(task_id))
+        if task is None or task.run_id != self.id:
+            return {"error": f"工单 #{task_id} 不属于本次运行"}
+        if task.terminal:
+            return {
+                "error": f"工单 #{task_id} 已经结束（{task.status}），没有可停的东西",
+                "status": str(task.status),
+            }
+        handle = self._tasks.get(task.id)
+        if handle is None or handle.done():
+            return {"error": f"工单 #{task_id} 没有在运行"}
+        handle.cancel()
+        if reason.strip():
+            # The transcript is about to disappear from the lead's view; the
+            # reason is what keeps the decision reviewable.
+            self.record_fact(
+                None,
+                FactKind.OBSERVATION,
+                f"主 agent 停止了工单 #{task.id}（{task.role}）：{reason.strip()[:300]}",
+                {"system": True, "stopped_task_id": task.id},
+            )
+        self._emit(
+            "task.stopping",
+            {"task_id": task.id, "role": task.role, "reason": reason.strip()[:300]},
+            task_id=task.id,
+        )
+        return {
+            "task_id": task.id,
+            "role": task.role,
+            "status": "stopping",
+            "note": "已发出停止信号；下一次 wait_tasks 会看到它的最终状态，槽位同时释放。",
+        }
+
     def _bind_resume(self, task: Any, prior_id: int) -> None:
         """Point a new task at the transcript of a task that ran out of room.
 
@@ -1868,7 +2007,20 @@ class Run:
         last_text = ""
         final_payload: dict[str, Any] = {}
         try:
-            async with self._worker_slots:
+            # The worker slots bound how many *directions* may run at once, so
+            # the lead cannot fan out past what it can read. A verifier is not a
+            # direction: it confirms a value the run has already found, and it
+            # used to queue behind four busy workers — the operator's confirm
+            # then expired after ``confirm_verifier_wait_s`` (90 s) without a
+            # verdict, because the session had not even started. Closing roles
+            # still take a pool slot (``max_sessions``), which is the real
+            # resource bound.
+            slots = (
+                contextlib.nullcontext()
+                if task.role in CLOSING_ROLES
+                else self._worker_slots
+            )
+            async with slots:
                 async with self.ctx.pool:
                     self.store.mark_task_started(task_id)
                     self._emit("task.started", {"task_id": task_id, "role": task.role}, task_id=task_id)
@@ -1931,7 +2083,25 @@ class Run:
                         # #70 ran 3540 s against a 1800 s limit that was
                         # declared in config and enforced nowhere — it was only
                         # used as the wait timeout for the writer.
-                        deadline = time.time() + self.cfg.limits.task_timeout_s
+                        _timeout_s = self._task_clock(task.role)
+                        deadline = time.time() + _timeout_s
+                        # Registered before the first event so ``wait_tasks``
+                        # can report how much of the task's clock is left even
+                        # while the model is still on its opening turn.
+                        self._live.setdefault(
+                            task_id,
+                            {"tools": 0, "last_tool": "", "last_event": time.time()},
+                        )["deadline"] = deadline
+                        # Inter-event gaps this task has actually shown, and when
+                        # the last event landed. A model turn slower than the
+                        # stall clock is ordinary work, not a hang: on run 84,
+                        # task #164 produced 279 s and 299 s turns with nothing
+                        # wrong, right after a 300 s stall had reaped and
+                        # re-paid for an earlier one. Turns also lengthen as the
+                        # transcript grows, so the clock has to follow them.
+                        turn_gaps: list[float] = []
+                        last_event_at: float | None = None
+                        pass_started = time.time()
                         while True:
                             if restart:
                                 stream = self.ctx.backend.run(spec)
@@ -1939,16 +2109,25 @@ class Run:
                                 inflight.clear()
                                 background.clear()
                                 restart = False
+                                # The silence that just fired is the one thing
+                                # that must not count as this task's normal
+                                # latency.
+                                last_event_at = None
+                                pass_started = time.time()
                             waiting_on_tool = bool(inflight)
                             waiting_on_background = bool(background)
                             if waiting_on_tool or waiting_on_background:
                                 budget = self.cfg.limits.tool_wait_timeout_s
+                                awaiting_model = False
                             else:
-                                budget = self.cfg.limits.stall_timeout_s
+                                budget = self._turn_budget(
+                                    self.cfg.limits.stall_timeout_s, turn_gaps
+                                )
+                                awaiting_model = True
                             left = deadline - time.time()
                             if left <= 0:
                                 error = (
-                                    f"任务超过 {self.cfg.limits.task_timeout_s} 秒上限，已中断"
+                                    f"任务超过 {_timeout_s} 秒上限，已中断"
                                 )
                                 final_payload.setdefault("subtype", "task_timeout")
                                 status = TaskStatus.EXHAUSTED
@@ -1966,7 +2145,7 @@ class Run:
                                 # left for another attempt.
                                 if time.time() >= deadline:
                                     error = (
-                                        f"任务超过 {self.cfg.limits.task_timeout_s} 秒上限，已中断"
+                                        f"任务超过 {_timeout_s} 秒上限，已中断"
                                     )
                                     final_payload.setdefault("subtype", "task_timeout")
                                     status = TaskStatus.EXHAUSTED
@@ -1991,13 +2170,24 @@ class Run:
                                         resume_session_id=session_id,
                                         prompt=prompts.stall_resume_text(),
                                     )
+                                    silent = int(
+                                        time.time() - (last_event_at or pass_started)
+                                    )
+                                    # The lead wakes on ``wait_tasks`` and has to
+                                    # be able to tell a resumed task that is
+                                    # still making turns from one that has now
+                                    # stalled twice.
+                                    self._live.setdefault(
+                                        task_id,
+                                        {"tools": 0, "last_tool": "", "last_event": time.time()},
+                                    )["stalls"] = stalls
                                     self._emit(
                                         "task.stall_retry",
                                         {
                                             "task_id": task_id,
                                             "attempt": stalls,
                                             "session_id": session_id,
-                                            "silent_s": budget,
+                                            "silent_s": silent,
                                         },
                                         task_id=task_id,
                                     )
@@ -2010,11 +2200,20 @@ class Run:
                                 else:
                                     what = "模型"
                                 error = (
-                                    f"卡住了：{what} {budget} 秒没有任何事件，已中断"
+                                    f"卡住了：{what} {int(budget)} 秒没有任何事件，已中断"
                                 )
                                 final_payload.setdefault("subtype", "stall_timeout")
                                 status = TaskStatus.EXHAUSTED
                                 break
+                            now = time.time()
+                            if awaiting_model and last_event_at is not None:
+                                # Two events with no tool in flight between them
+                                # is one model turn. Only the recent past counts:
+                                # an early slow stretch must not license a much
+                                # longer stall a quarter of an hour later.
+                                turn_gaps.append(now - last_event_at)
+                                del turn_gaps[:-16]
+                            last_event_at = now
                             if event.kind == "tool_use":
                                 inflight.add(str(event.payload.get("id") or ""))
                             elif event.kind == "tool_result":
@@ -2097,6 +2296,31 @@ class Run:
                                 final_payload = event.payload
                                 session_id = str(final_payload.get("session_id") or session_id)
                                 status = self._status_from_result(event.payload)
+                                outage = self._note_gateway_failure(
+                                    task, final_payload, str(last_text or "")
+                                )
+                                if outage:
+                                    # A 503/model_not_found result is the endpoint
+                                    # talking, not the task. Recorded with its
+                                    # text so the lead and the operator can see
+                                    # what it was, and counted so the next
+                                    # dispatch is refused instead of paid for.
+                                    status = TaskStatus.FAILED
+                                    error = outage
+                                    final_payload["subtype"] = "gateway_error"
+                                # A result is the SDK's terminal message: what
+                                # follows is teardown, not work. Observed live
+                                # (run 88's verifier): the CLI emitted
+                                # `subtype=success` and then did not exit — the
+                                # async-for below waited 18 minutes for a stream
+                                # that had nothing left to say, freezing a
+                                # finished task on `running`, and inside the
+                                # bench runner it ate the whole wall clock.
+                                # Close the stream (bounded) and finish now;
+                                # the EXHAUSTED wrap-up below still runs and
+                                # resumes its own stream when it applies.
+                                await _close_stream(stream)
+                                break
                             if self._stop.is_set() and task_id not in self._post_stop_ok:
                                 status = TaskStatus.STOPPED
                                 break
@@ -2333,6 +2557,11 @@ class Run:
             summary = str(explicit.get("summary") or last_text)
         else:
             summary = str(final_payload.get("result") or last_text)
+        if status == TaskStatus.FAILED and not error:
+            # Six tasks in runs 83/84 were closed FAILED with an empty error
+            # column while their whole result was the gateway's 503 text, so
+            # ``list_tasks`` showed a bare "失败" with nothing to act on.
+            error = (last_text or str(final_payload.get("result") or "")).strip()[:300]
         live = self._live.get(task_id) or {}
         result = {
             "summary": summary[:8000],
@@ -2355,6 +2584,7 @@ class Run:
         # place, a stale entry would keep ``live`` (and its background count)
         # on every later ``wait_tasks`` for a task that has already ended.
         self._live.pop(task_id, None)
+        self._lead_seen.pop(task_id, None)
         self._emit(
             "task.finished",
             {"task_id": task_id, "role": role, "status": status, "error": error,
@@ -2564,7 +2794,7 @@ class Run:
                     "terminal": task.terminal,
                     "result": self._wait_result(task),
                     "error": task.error,
-                    "live": self.live_progress(task_id),
+                    "live": self._pulse(task_id),
                 }
             )
         return out
@@ -2639,6 +2869,45 @@ class Run:
             elif backgrounded is True:
                 live.add(task_id)
 
+    def _turn_budget(self, base: float, gaps: list[float]) -> float:
+        """How long a silent model turn may run before it counts as a stall.
+
+        ``stall_timeout_s`` is a constant; turn latency is not. It differs by
+        model by 3-4x and grows with the transcript, and its slowest ordinary
+        turns land right on the constant — measured on run 84, task #164 ran
+        279 s and 299 s turns with nothing wrong, immediately after a 300 s
+        stall had reaped one and made it pay for the resumed transcript. A turn
+        already observed taking ``p90`` is this task's normal, so allow two of
+        them, capped by ``tool_wait_timeout_s`` so a dead gateway is still
+        caught inside a quarter of an hour. It only ever loosens: a fast model
+        keeps exactly the configured clock.
+        """
+        if len(gaps) < 3:
+            return float(base)
+        ordered = sorted(gaps)
+        p90 = ordered[min(len(ordered) - 1, int(len(ordered) * 0.9))]
+        return max(float(base), min(p90 * 2.0, float(self.cfg.limits.tool_wait_timeout_s)))
+
+    def _pulse(self, task_id: int) -> dict[str, Any]:
+        """``live_progress`` plus what changed since the lead last looked.
+
+        A bare ``tools: 42`` answers nothing on the second read: the same 42
+        and a frozen worker look identical. ``new_tools`` against the previous
+        ``wait_tasks`` is the delta the lead actually decides on, and it is
+        kept out of ``live_progress`` so the page's activity strip cannot
+        consume the lead's snapshot and zero its next delta.
+        """
+        now = time.time()
+        out = self.live_progress(task_id)
+        if not out:
+            return out
+        prev = self._lead_seen.get(task_id)
+        if prev is not None:
+            out["new_tools"] = int(out["tools"]) - int(prev["tools"])
+            out["checked_ago_s"] = int(now - float(prev["at"]))
+        self._lead_seen[task_id] = {"tools": int(out["tools"]), "at": now}
+        return out
+
     def live_progress(self, task_id: int) -> dict[str, Any]:
         """What a running task has actually done, since its cost books at the end.
 
@@ -2660,6 +2929,16 @@ class Run:
             # 40-minute extraction and a dead session, and hedges with a second
             # worker — the one response that is always wasted.
             out["background"] = live["background"]
+        if live.get("stalls"):
+            # A resumed task carries the count with it: the second silence on
+            # the same task means the gateway, not the transcript.
+            out["stalls"] = int(live["stalls"])
+        deadline = float(live.get("deadline") or 0.0)
+        if deadline:
+            # Without this the lead cannot tell "quiet for 4 minutes out of 30"
+            # from "quiet for 4 minutes out of 31", which is what decides
+            # whether to keep waiting or to consolidate.
+            out["clock_left_s"] = max(0, int(deadline - time.time()))
         return out
 
     # ------------------------------------------------------------- blackboard
@@ -3112,6 +3391,17 @@ class Run:
         near-miss with an extra ``!`` outranked the real flag.
         """
         if not text:
+            return
+        # The structured channel beats the scan. A worker that called
+        # ``submit_flag`` already stated its answer; scanning its report
+        # anyway turned every number in the prose into a low-confidence
+        # decoy — run 83 produced nine decoys around one real flag under a
+        # `[0-9]+` flag format. The scan keeps its purpose as the safety net
+        # for workers that forgot to submit.
+        if any(
+            f.task_id == task_id and f.source != "worker 的最终报告"
+            for f in self.store.list_flags(self.id)
+        ):
             return
         default = r"[A-Za-z0-9_]{2,20}\{[^{}\s]{4,200}\}"
         pattern = self.challenge.flag_format or default
