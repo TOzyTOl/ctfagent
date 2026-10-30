@@ -1433,20 +1433,22 @@ kbd {
 .just-captured { animation: sheet-settle .34s var(--ease) both; }
 
 /* The one moment the platform congratulates the operator: a single white word
-   tossed out of the button that produced it, bouncing to rest, then gone.
+   tossed onto the flag's own value line, bouncing to rest, then gone.
  *
- * Anchored rather than centred. The word lands on the 确认 button it came from,
- * so the eye does not have to leave the card to find it — the whole gesture
- * reads as "this is what that click bought". `.get-flash` does the anchoring
- * (fixed, positioned from the button's rect by app.js); the inner span does the
- * travel, so the two transforms never have to be composed into one string.
+ * Anchored to the value row, not to a button: the flag is the thing that was
+ * earned, and the row keeps its place while the buttons around it get swapped
+ * by the in-place refresh. The rect is captured at click time by app.js and
+ * handed over as numbers — a rect taken at response time described an element
+ * that a swap had already detached, which is where the word used to land.
+ * `.get-flash` does the anchoring (fixed, positioned from the numbers); the
+ * inner span does the travel, so the two transforms never have to be composed
+ * into one string.
  *
- * The path is an oblique throw, shallow: it leaves high and to the left, and
- * travels right while falling. Horizontal speed is constant and vertical speed
- * accelerates, which is what makes the curve read as a thrown object rather than
- * a sliding one. Four contacts, each rebound lower and shorter than the last,
- * with a squash on every impact and a stretch in between — one bounce reads as a
- * click acknowledgement, several read as weight. */
+ * The path is a shallow toss that arrives from the upper left and bounces in
+ * place: four contacts, each rebound lower and shorter than the last, with a
+ * squash on every impact and a stretch in between — one bounce reads as a
+ * click acknowledgement, several read as weight. Horizontal drift is capped
+ * at a few pixels so the word stays over the line it belongs to. */
 .get-flash {
   position: fixed;
   z-index: 60;
@@ -1466,20 +1468,20 @@ kbd {
   animation: get-drop .78s cubic-bezier(.33, .9, .5, 1) both;
 }
 @keyframes get-drop {
-  /* 斜抛：水平匀速，垂直加速 */
-  0%   { opacity: 0; transform: translate(-40px, -40px) scaleY(1.07); }
-  9%   { opacity: 1; transform: translate(-33px, -36px) scaleY(1.06); }
-  20%  { transform: translate(-15px, -24px) scaleY(1.04); }
-  28%  { transform: translate(-5px, -9px) scaleY(1.01); }
+  /* 斜抛进入，原地弹跳：水平漂移控制在几个像素内 */
+  0%   { opacity: 0; transform: translate(-14px, -40px) scaleY(1.07); }
+  9%   { opacity: 1; transform: translate(-10px, -36px) scaleY(1.06); }
+  20%  { transform: translate(-4px, -24px) scaleY(1.04); }
+  28%  { transform: translate(-1px, -9px) scaleY(1.01); }
   32%  { transform: translate(0, 0) scaleY(.76); }     /* 落地，压扁 */
-  42%  { transform: translate(7px, -14px) scaleY(1.05); }
-  52%  { transform: translate(12px, 0) scaleY(.86); }   /* 第二下 */
-  61%  { transform: translate(16px, -7px) scaleY(1.03); }
-  70%  { transform: translate(19px, 0) scaleY(.92); }   /* 第三下 */
-  78%  { transform: translate(21px, -3px) scaleY(1.01); }
-  85%  { transform: translate(23px, 0) scaleY(.96); }   /* 第四下 */
-  92%  { transform: translate(24px, 0) scaleY(1); opacity: 1; }
-  100% { transform: translate(24px, 0) scaleY(1); opacity: 0; }
+  42%  { transform: translate(2px, -14px) scaleY(1.05); }
+  52%  { transform: translate(3px, 0) scaleY(.86); }   /* 第二下 */
+  61%  { transform: translate(4px, -7px) scaleY(1.03); }
+  70%  { transform: translate(5px, 0) scaleY(.92); }   /* 第三下 */
+  78%  { transform: translate(5px, -3px) scaleY(1.01); }
+  85%  { transform: translate(6px, 0) scaleY(.96); }   /* 第四下 */
+  92%  { transform: translate(6px, 0) scaleY(1); opacity: 1; }
+  100% { transform: translate(6px, 0) scaleY(1); opacity: 0; }
 }
 
 /* The palette is a panel arriving above the page, so it is the one thing here

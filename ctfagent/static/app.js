@@ -475,6 +475,19 @@
       e.preventDefault();
       var btn = form.querySelector('button[type="submit"]');
       if (btn) { btn.classList.add("busy"); btn.disabled = true; }
+      // The flash anchors on the flag's own value row, and the rect is taken
+      // synchronously here — not when the response arrives. Between click and
+      // response the panel can scroll, swap or reload (the verifier wait alone
+      // is up to 90 s), and a rect taken that late described a button that was
+      // already detached, which is where the word used to land: top-left
+      // corner, on a zero rect. Coordinates are just numbers; they keep.
+      var anchorRect = null;
+      var card = form.closest(".flag");
+      var value = card && card.querySelector(".value");
+      if (value) {
+        var vr = value.getBoundingClientRect();
+        anchorRect = { left: vr.left + vr.width / 2, top: vr.top - 2 };
+      }
       // Claim the page before the request goes out: the server emits
       // `flag.confirmed` while handling it, so the event can arrive before the
       // response does.
@@ -487,7 +500,7 @@
       })
         .then(function (response) {
           if (!response.ok) throw new Error("HTTP " + response.status);
-          flashGet(btn);
+          if (anchorRect) flashGet(anchorRect);
           swapRunFragments(currentRunId());
         })
         .catch(function (err) {
@@ -499,20 +512,20 @@
     });
   }
 
-  function flashGet(anchor) {
+  function flashGet(anchorRect) {
     var el = document.createElement("div");
     el.className = "get-flash";
     el.setAttribute("aria-live", "polite");
     var word = document.createElement("span");
     word.textContent = "Get!";
     el.appendChild(word);
-    // Land it on the button that was clicked. `top` is the button's top edge, and
-    // the container's `translate(-50%, -100%)` puts the word's baseline there, so
-    // it comes to rest sitting on the button rather than over the note field.
-    if (anchor && anchor.getBoundingClientRect) {
-      var rect = anchor.getBoundingClientRect();
-      el.style.left = Math.round(rect.left + rect.width / 2) + "px";
-      el.style.top = Math.round(rect.top - 2) + "px";
+    // Land it on the flag's value row. `top` is that row's top edge, and the
+    // container's `translate(-50%, -100%)` puts the word's baseline there, so
+    // it comes to rest sitting on the flag itself rather than over the
+    // buttons — the gesture reads as "this is the line you just earned".
+    if (anchorRect) {
+      el.style.left = Math.round(anchorRect.left) + "px";
+      el.style.top = Math.round(anchorRect.top) + "px";
     } else {
       el.style.left = "50%";
       el.style.top = "50%";
