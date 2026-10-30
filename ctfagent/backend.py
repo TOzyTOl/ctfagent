@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Protocol
 
-from .config import AppConfig, _claude_settings_env
+from .config import REPO_ROOT, AppConfig, _claude_settings_env
 
 #: CLI-reported failures that mean "no usable credentials", not "the model
 #: refused". Their assistant message is a synthetic prompt telling the operator
@@ -234,6 +234,27 @@ _SPAWN_FAILURES = {
 }
 
 
+def cli_missing_message(error: str) -> str:
+    """A readable line when the Claude Code executable itself is unreachable.
+
+    Observed live on 2026-10-31: for a few minutes the npm-installed binary at
+    ``%APPDATA%\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe``
+    could not be opened (most likely an auto-update replacing a 300 MB file),
+    and every worker dispatched in that window died in the same second with an
+    empty error column. The run spent eight tasks discovering it one at a time.
+    """
+    text = str(error or "")
+    if "CLINotFoundError" not in text and "not found at" not in text:
+        return ""
+    path = text.split("not found at:", 1)[-1].strip() if "not found at:" in text else ""
+    return (
+        f"找不到 Claude Code 可执行文件{f'（{path}）' if path else ''}。"
+        "这既不是题目问题也不是模型问题：检查 npm 安装是否完整、"
+        "或在 config.toml 的 [cli] 里用 cli_path 指到一个能跑的 claude，"
+        "再重新派工。正在跑的会话不受影响。"
+    )
+
+
 def spawn_error_message(error: str) -> str:
     """A readable line for a child process that never started.
 
@@ -322,6 +343,14 @@ class ClaudeSDKBackend:
         self.cfg = cfg
         self.cli_path = resolve_cli_path(cfg.cli_path)
 
+    def _sandbox_env(self, extra_env: dict[str, str] | None) -> dict[str, str]:
+        """Sandbox variables appended to every session's env in wsl mode."""
+        env = dict(extra_env or {})
+        if self.cfg.sandbox.mode == "wsl":
+            env["CTFAGENT_SANDBOX_DISTRO"] = self.cfg.sandbox.wsl_distro
+            env["CTFAGENT_SANDBOX_CLI"] = self.cfg.sandbox.wsl_cli
+        return env
+
     # -- option assembly ---------------------------------------------------
     def _options(self, spec: SessionSpec):
         sdk = _sdk()
@@ -346,7 +375,7 @@ class ClaudeSDKBackend:
             permission_mode="bypassPermissions",
             # Only <cwd>/.claude loads: the run's skills, nothing from the operator.
             setting_sources=["project"],
-            env=_credential_env(self.cfg, spec.extra_env),
+            env=_credential_env(self.cfg, self._sandbox_env(spec.extra_env)),
             mcp_servers=spec.mcp_servers or {},
             strict_mcp_config=True,
             hooks=spec.hooks or {},
@@ -357,6 +386,20 @@ class ClaudeSDKBackend:
         )
         if self.cli_path:
             kwargs["cli_path"] = self.cli_path
+        # Sandbox mode "wsl": spawn the forwarder exe instead of the CLI. It
+        # carries the session into the distro (argv verbatim, cwd translated
+        # to its WSL form) and passes the two config values through env —
+        # the forwarder reads them, the SDK argv never changes shape. The
+        # sandbox decision wins over the default resolution above: in this
+        # mode the host CLI path is irrelevant by definition.
+        if (
+            self.cfg.sandbox.mode == "wsl"
+            and self.cfg.sandbox.wsl_distro
+            and self.cfg.sandbox.wsl_cli
+        ):
+            forwarder = REPO_ROOT / "bin" / "ctfagent-cli-wsl.exe"
+            if forwarder.is_file():
+                kwargs["cli_path"] = str(forwarder)
         if self.cfg.models.fallback:
             kwargs["fallback_model"] = self.cfg.models.fallback
         if spec.resume_session_id:

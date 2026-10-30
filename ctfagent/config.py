@@ -436,13 +436,18 @@ class LimitsConfig:
 
 @dataclass
 class SandboxConfig:
-    #: "none" = run on the host; "docker" = the prompt tells the agent commands
-    #: run in a container. Note that the second value is currently advisory: the
-    #: shell tool is not actually wrapped, so set it only if the container
-    #: wrapper has been implemented.
+    #: "none" = run on the host; "wsl" = the session CLI itself runs inside the
+    #: named WSL2 distro (real isolation: no worker command touches the host).
+    #: "docker" remains advisory/unimplemented — see docs/设计-20261031-沙箱路线.md
+    #: for why the cli_path wrapper approach was rejected on Windows.
     mode: str = "none"
     image: str = "ctfagent/kali:latest"
     network: str = "bridge"
+    #: The WSL2 distro sessions run in when mode = "wsl", and the claude CLI
+    #: path inside it. Both must be set for the mode to engage; the forwarder
+    #: executable (bin/ctfagent-cli-wsl.exe) is what the SDK actually spawns.
+    wsl_distro: str = ""
+    wsl_cli: str = ""
 
 
 @dataclass

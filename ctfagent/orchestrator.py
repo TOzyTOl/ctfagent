@@ -44,6 +44,7 @@ from .backend import (
     AgentEvent,
     SessionSpec,
     auth_error_message,
+    cli_missing_message,
     gateway_error,
     spawn_error_message,
 )
@@ -456,6 +457,12 @@ class Run:
         self._gateway_failures: list[tuple[float, str, str]] = []
         #: Models already warned about, so the event rail says it once.
         self._gateway_warned: set[str] = set()
+        #: ``(when, hint)`` for sessions the *machine* refused — a missing CLI
+        #: binary, a spawn failure. Same rule as the endpoint: two in a row and
+        #: further dispatches are refused, because each one dies in a second
+        #: and the run pays for the discovery either way.
+        self._infra_failures: list[tuple[float, str]] = []
+        self._infra_warned: set[str] = set()
         #: task id -> what the lead saw on its previous ``wait_tasks``. ``tools``
         #: alone cannot answer "is it still working": the lead wakes every few
         #: minutes and reads the same number twice, which looks identical to a
@@ -1766,6 +1773,15 @@ class Run:
         and workers recorded that fake status as target behaviour.
         """
         env = {"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+        # Never let the CLI swap its own binary mid-competition. Observed live
+        # on 2026-10-31 17:19: for a couple of minutes
+        # ``...\@anthropic-ai\claude-code\bin\claude.exe`` was not openable —
+        # the directory held two ``claude.exe.old.<timestamp>`` files, the
+        # signature of an auto-update replacing a 300 MB executable — and every
+        # worker dispatched in that window died in the same second. A run does
+        # not need a new CLI version mid-challenge; it needs the one it started
+        # with.
+        env["DISABLE_AUTOUPDATER"] = "1"
         # Let the lead's wait_tasks block for minutes inside one MCP call.
         # The CLI kills an MCP tool call that exceeds MCP_TOOL_TIMEOUT
         # (milliseconds); at the stock ceiling the lead could wait at most
@@ -1911,6 +1927,36 @@ class Run:
                 },
             )
         return message
+
+    def _note_infra_failure(self, message: str) -> str:
+        """Record a machine-level failure and return an actionable line, or "".
+
+        A task whose session never started must not read like a challenge that
+        was tried and failed: on 2026-10-31 eight tasks died in the same second
+        with an empty error column, and the lead — seeing only "failed" — kept
+        dispatching instead of asking the operator.
+        """
+        text = " ".join(str(message or "").split())
+        hint = spawn_error_message(text) or cli_missing_message(text)
+        if not hint:
+            return ""
+        self._infra_failures.append((time.time(), hint))
+        del self._infra_failures[:-20]
+        if hint not in self._infra_warned:
+            self._infra_warned.add(hint)
+            self._emit(
+                "run.warning",
+                {"kind": "infra_error", "message": hint},
+            )
+        return hint
+
+    def infra_outage(self, window_s: float = 900.0) -> dict[str, Any]:
+        """Recent machine-level failures, when there are enough to stop dispatching."""
+        now = time.time()
+        recent = [f for f in self._infra_failures if now - f[0] <= window_s]
+        if len(recent) < 2:
+            return {}
+        return {"count": len(recent), "message": recent[-1][1], "window_s": int(window_s)}
 
     def gateway_outage(self, window_s: float = 900.0) -> dict[str, Any]:
         """Recent endpoint rejections, when there are enough to stop dispatching."""
@@ -2276,6 +2322,18 @@ class Run:
                                     )
                                     status = TaskStatus.EXHAUSTED
                                     break
+                            if event.kind == "error":
+                                # The backend yields this when the session's
+                                # stream threw. Nothing follows it, so the loop
+                                # must close the task here — otherwise it fell
+                                # through to StopAsyncIteration and the task was
+                                # recorded FAILED with an empty error column.
+                                raw = str(event.payload.get("error") or "")
+                                error = self._note_infra_failure(raw) or raw or "会话异常结束"
+                                status = TaskStatus.FAILED
+                                final_payload = {}
+                                last_text = ""
+                                break
                             if event.kind == "auth_error":
                                 # Same failure the lead would hit: no credential
                                 # reaches the child at all. The CLI's own text

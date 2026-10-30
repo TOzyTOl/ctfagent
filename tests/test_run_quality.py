@@ -1416,3 +1416,122 @@ async def test_a_result_event_ends_the_task_even_when_the_stream_hangs(
     assert row.cost_usd == pytest.approx(0.1)
 
     backend._release.set()  # let the test process unwind cleanly
+
+
+# ------------------------------------------- the machine failing, not the task
+
+
+def test_a_missing_cli_is_reported_as_the_machines_problem() -> None:
+    """Eight tasks died in one second with an empty error column on 2026-10-31."""
+    from ctfagent.backend import cli_missing_message, spawn_error_message
+
+    raw = (
+        "CLINotFoundError: Claude Code not found at: "
+        r"C:\Users\x\AppData\Roaming\npm\node_modules\@anthropic-ai"
+        "\\claude-code\\bin\\claude.exe"
+    )
+    line = cli_missing_message(raw)
+    assert "claude.exe" in line
+    assert "cli_path" in line
+    # A challenge-side error must not be dressed up as a machine failure.
+    assert cli_missing_message("HTTP 404 from the target") == ""
+    assert spawn_error_message(raw) == ""
+
+
+async def test_two_machine_failures_stop_further_dispatch(
+    cfg, fixtures_dir: Path, store_and_bus
+) -> None:
+    store, bus = store_and_bus
+    run = _manager(store, bus, cfg).prepare(
+        store.add_challenge(load_challenge(fixtures_dir / "easy_rev"))
+    )
+    from ctfagent.tools import OrchestratorTools
+
+    tools = OrchestratorTools(run)
+    raw = "CLINotFoundError: Claude Code not found at: C:/nowhere/claude.exe"
+    assert run._note_infra_failure(raw)
+    assert not run.infra_outage()          # one is a hiccup
+    run._note_infra_failure(raw)
+
+    refused = await tools.dispatch_task("reverse", "try again")
+    assert "起不了会话" in refused["error"]
+    assert refused["infra_outage"]["count"] == 2
+
+    warnings = [e for e in store.events_since(run.id) if e.kind == "run.warning"]
+    assert len([w for w in warnings if w.payload.get("kind") == "infra_error"]) == 1
+
+
+async def test_an_error_event_closes_the_task_with_its_message(
+    cfg, fixtures_dir: Path, store_and_bus
+) -> None:
+    """The stream ends after an ``error`` event; the task must say why.
+
+    Before this, the loop fell through to StopAsyncIteration and recorded the
+    task FAILED with ``error=''``, so the lead saw a bare failure.
+    """
+    store, bus = store_and_bus
+    run = _manager(store, bus, cfg).prepare(
+        store.add_challenge(load_challenge(fixtures_dir / "easy_rev"))
+    )
+    task = store.create_task(run.id, "reverse", "x", "")
+    store.mark_task_started(task.id)
+    run._finish_task(
+        task.id, "reverse", TaskStatus.FAILED,
+        "CLINotFoundError: Claude Code not found at: C:/nowhere/claude.exe",
+        {}, "",
+    )
+    assert "claude.exe" in (store.get_task(task.id).error or "")
+
+
+def test_sessions_never_let_the_cli_update_itself(
+    cfg, fixtures_dir: Path, store_and_bus
+) -> None:
+    """An auto-update mid-run made the binary briefly unreachable (2026-10-31).
+
+    Every worker dispatched in that window died in the same second; the run
+    needs the CLI it started with, not a newer one.
+    """
+    store, bus = store_and_bus
+    run = _manager(store, bus, cfg).prepare(
+        store.add_challenge(load_challenge(fixtures_dir / "easy_rev"))
+    )
+    assert run._session_env()["DISABLE_AUTOUPDATER"] == "1"
+
+
+def test_wsl_sandbox_mode_spawns_through_the_forwarder(
+    cfg, fixtures_dir: Path, store_and_bus, tmp_path: Path, monkeypatch
+) -> None:
+    """Sandbox mode "wsl" routes the SDK spawn through the forwarder exe.
+
+    The SDK gate only rejects .bat/.cmd components (verified against the
+    installed SDK source), so a native forwarder exe is the one legal way to
+    carry a session into WSL on Windows. The distro and the inner CLI path
+    travel by env — the forwarder reads them, the argv never changes shape.
+    """
+
+    monkeypatch.setattr("ctfagent.backend.REPO_ROOT", tmp_path)
+    forwarder = tmp_path / "bin" / "ctfagent-cli-wsl.exe"
+    forwarder.parent.mkdir(parents=True)
+    forwarder.write_bytes(b"MZ")  # existence is the only requirement
+
+    store, bus = store_and_bus
+    from ctfagent.backend import ClaudeSDKBackend
+
+    run = _manager(store, bus, cfg).prepare(
+        store.add_challenge(load_challenge(fixtures_dir / "easy_crypto"))
+    )
+    run.cfg.sandbox.mode = "wsl"
+    run.cfg.sandbox.wsl_distro = "Ubuntu-20.04"
+    run.cfg.sandbox.wsl_cli = "/usr/local/bin/claude"
+
+    backend = ClaudeSDKBackend(run.cfg)
+    spec = run._main_spec()
+    options = backend._options(spec)
+    assert options.cli_path == str(forwarder)
+    assert options.env["CTFAGENT_SANDBOX_DISTRO"] == "Ubuntu-20.04"
+    assert options.env["CTFAGENT_SANDBOX_CLI"] == "/usr/local/bin/claude"
+
+    # default mode: cli_path untouched, no sandbox env
+    run.cfg.sandbox.mode = "none"
+    options = backend._options(run._main_spec())
+    assert "CTFAGENT_SANDBOX_DISTRO" not in options.env

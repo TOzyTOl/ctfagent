@@ -286,6 +286,24 @@ class OrchestratorTools:
                     "propose_flag，或直接 finish_run 交出一份说明。"
                 )
             }
+        # The machine failing is the same rule as the endpoint failing: a task
+        # dispatched while the CLI binary is unreachable dies in a second, and
+        # the run learns nothing from paying for it repeatedly. Two in a row and
+        # the lead has to tell the operator instead.
+        infra = self.run.infra_outage()
+        if infra and not force:
+            return {
+                "error": (
+                    f"这台机器上起不了会话（最近 {infra['window_s'] // 60} 分钟内 "
+                    f"{infra['count']} 次）：{infra['message'][:240]}"
+                ),
+                "infra_outage": infra,
+                "options": [
+                    "用 ask_user 把这条告诉操作员，等他修好",
+                    "已有结论先写进黑板，finish_run 交一份说明",
+                    "确认修好之后再派，并带 force=true",
+                ],
+            }
         # An endpoint that has rejected two sessions in the last quarter of an
         # hour will reject the next one too. That is not a direction choice and
         # not something a different objective can fix: the model name does not

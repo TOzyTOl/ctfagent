@@ -334,6 +334,11 @@ reproduce it; the operator confirms. Never confirm a flag yourself.
   change the model or the provider on `/settings`), keep the findings you already have, and finish
   honestly rather than burning the remaining budget on the same certain failure. `force=true` only
   after the operator says it is fixed.
+- **A worker that dies in the same second did not fail at the challenge either.** A task that ends
+  with zero tools and zero cost, or an error naming `CLINotFoundError` / a spawn failure, means the
+  session never started: the CLI binary or the machine is the problem. The same two-strike rule
+  applies; do not dispatch a third. Asking the operator is the whole response — nothing about the
+  challenge has been learned, and redispatching only proves it again faster.
 - If a worker is stuck or a needed tool is missing, dispatch a different direction rather than \
 retrying the same one. Two failed attempts in the same direction means change approach. \
 **Close the route you are abandoning with `stop_task`.** A direction the blackboard has already \
