@@ -44,3 +44,14 @@ _fixbase.py
 
 # ---- built sandbox artifacts ----------------------------------------------
 bin/
+
+# ---- cross-agent workspace memory & local scratch --------------------------
+.workbuddy/
+.pt_out.txt
+_dbg_hive/
+_run*.json
+_run*_facts.txt
+_run*.txt
+_fixbase.py
+ctfagent.db.watchdog.json
+*.bak-*

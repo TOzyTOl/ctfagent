@@ -9,182 +9,59 @@ metadata:
   argument-hint: "[category] [challenge-file-or-url]"
 ---
 
-# CTF Challenge Solver
+# CTF 调度入口
 
-You're a skilled CTF player. Your goal is to solve the challenge and find the flag.
+**一次只加载一个域技能。** 同时开两个域，上下文会被两份判别树互相污染。
 
-## Environment Setup
+## Step 0 三样东西先齐
 
-Two setup strategies depending on your workflow:
+题面原文、附件全量、目标地址（host:port / URL）。缺一样就先问，不要猜着开工。
 
-### Pre-install (recommended before competitions)
-
-Use the central installer entrypoint:
+## Step 1 30 秒分诊
 
 ```bash
-bash scripts/install_ctf_tools.sh all
+file *; ls -la; du -sh *
+strings -a * 2>/dev/null | grep -iE '(flag|ctf)\{' | head
 ```
 
-Run a narrower mode when you only want one tool group:
+| 证据 | 域 |
+|---|---|
+| 有 URL / HTTP 交互 | `ctf-web` |
+| ELF/PE + 给了远程端口 | `ctf-pwn` |
+| 二进制但只问「它做了什么」 | `ctf-reverse` |
+| 镜像 / PCAP / 日志 / 音频 / 图片 | `ctf-forensics` |
+| 数字、模数、密文、脚本 | `ctf-crypto` |
+| 混淆脚本 / C2 / 样本 | `ctf-malware` |
+| 只要「找出来是谁/在哪」 | `ctf-osint` |
+| 以上都不贴 | `ctf-misc`（兜底，别当默认） |
+
+判据优先看**输入形态**，其次看题面关键词。题面关键词经常是误导。
+
+## Step 2 进域后
+
+域入口只给判别树。按树走，读 `INDEX.md` 选题，一次最多两篇，读完立刻动手验证。
+
+## Step 3 卡住时的四个换向动作
+
+1. **质疑分类**：题面说的域不一定是真域（"web" 题可能要 JWT 数学）。
+2. **降一级**：完整链打不通就先拿最小原语（读一个文件 / 伪造一个 token）。
+3. **找遗漏**：隐藏文件、其他端口、响应头、源码注释、图片元数据。
+4. **找简路**：默认口令、已知 CVE、逻辑缺陷——比精细利用快得多。
+
+连续 2 个方向各 15 分钟无进展，回 Step 1 重判，而不是继续调参。
+
+## Step 4 flag 必须能重放（防幻觉）
+
+**不允许**把「看起来像 flag」的字符串直接当答案。判定标准：
+
+- 用一条命令/一个脚本，**从原始输入重新跑出同一串**，并把该命令记下来；
+- 有多个候选时，选能指回**预期产物**的那个，排除元数据噪声与诱饵；
+- 报告里必须写清来源文件路径与提取命令。
 
 ```bash
-bash scripts/install_ctf_tools.sh python
-bash scripts/install_ctf_tools.sh apt
-bash scripts/install_ctf_tools.sh brew
-bash scripts/install_ctf_tools.sh gems
-bash scripts/install_ctf_tools.sh go
-bash scripts/install_ctf_tools.sh manual
+grep -rniE '(flag|ctf|htb|pico|eno)\{' . | head
 ```
 
-The full package lists now live in [scripts/install_ctf_tools.sh](../scripts/install_ctf_tools.sh).
+## Step 5 收尾
 
-### On-demand (during challenges)
-
-Each category skill's `SKILL.md` has a **Prerequisites** section listing only the tools needed for that category. Install as you go.
-
-## Workflow
-
-### Step 0: CTFd Platform Detection
-
-If the CTF platform URL is known, check if it runs CTFd and switch to API-driven navigation:
-
-```bash
-# Detect CTFd (look for /api/v1/ and /themes/core/)
-curl -s "$CTF_URL/api/v1/" | head -5
-curl -s "$CTF_URL" | grep -oE '/themes/core/'
-```
-
-If CTFd is detected, **ask the user for their API token** (generated from CTFd Settings > Access Tokens). The token is not provided by default — the user must create one in the CTFd web UI first. Once provided, set the environment variables and proceed via API:
-
-```bash
-export CTF_URL="https://ctf.example.com"
-export CTF_TOKEN="ctfd_..."  # Ask user for this
-```
-
-Invoke `/ctf-misc` and load its `ctfd-navigation.md` for the full API reference and Python client class.
-
-### Step 1: Recon
-
-1. **Explore files** -- List the challenge directory, run `file *` on everything
-2. **Triage binaries** -- `strings`, `xxd | head`, `binwalk`, `checksec` on binaries
-3. **Fetch links** -- If the challenge mentions URLs, fetch them FIRST for context
-4. **Connect** -- Try remote services (`nc`) to understand what they expect
-5. **Read hints** -- Challenge descriptions, filenames, and comments often contain clues
-
-### Step 2: Categorize
-
-Determine the primary category, then invoke the matching skill.
-
-**By file type:**
-- `.pcap`, `.pcapng`, `.evtx`, `.raw`, `.dd`, `.E01` -> forensics
-- `.elf`, `.exe`, `.so`, `.dll`, binary with no extension -> reverse or pwn (check if remote service provided -- if yes, likely pwn)
-- `.py`, `.sage`, `.txt` with numbers -> crypto
-- `.apk`, `.wasm`, `.pyc` -> reverse
-- Web URL or source code with HTML/JS/PHP/templates -> web
-- Images, audio, PDFs with no obvious content -> forensics (steganography)
-
-**By challenge description keywords:**
-- "buffer overflow", "ROP", "shellcode", "libc", "heap" -> pwn
-- "RSA", "AES", "cipher", "encrypt", "prime", "modulus", "lattice", "LWE", "GCM" -> crypto
-- "XSS", "SQL", "injection", "cookie", "JWT", "SSRF" -> web
-- "disk image", "memory dump", "packet capture", "registry", "power trace", "side-channel", "spectrogram", "audio tracks", "MKV" -> forensics
-- "find", "locate", "identify", "who", "where" -> osint
-- "obfuscated", "packed", "C2", "malware", "beacon" -> malware
-- "jail", "sandbox", "escape", "encoding", "signal", "game", "Nim", "commitment", "Gray code" -> misc
-
-**By service behavior:**
-- Port with interactive prompt, crash on long input -> pwn
-- HTTP service -> web
-- netcat with math/crypto puzzles -> crypto
-- netcat with restricted shell or eval -> misc (jail)
-
-### Step 3: Invoke the Category Skill
-
-Once you identify the category, **invoke the matching skill** to get specialized techniques:
-
-| Category | Invoke | When to Use |
-|----------|--------|-------------|
-| Web | `/ctf-web` | XSS, SQLi, SSTI, SSRF, JWT, file uploads, prototype pollution |
-| Pwn | `/ctf-pwn` | Buffer overflow, format string, heap, ROP, sandbox escape |
-| Crypto | `/ctf-crypto` | RSA, AES, ECC, PRNG, ZKP, classical ciphers |
-| Reverse | `/ctf-reverse` | Binary analysis, game clients, VMs, obfuscated code |
-| Forensics | `/ctf-forensics` | Disk images, memory dumps, event logs, stego, network captures |
-| OSINT | `/ctf-osint` | Social media, geolocation, DNS, public records |
-| Malware | `/ctf-malware` | Obfuscated scripts, C2 traffic, PE/.NET analysis |
-| Misc | `/ctf-misc` | Jails, encodings, RF/SDR, esoteric languages, constraint solving |
-
-You can also invoke `/ctf-<category>` to load the full skill instructions with detailed techniques.
-
-### Step 4: Pivot When Stuck
-
-If your first approach doesn't work:
-
-1. **Re-examine assumptions** -- Is this really the category you think? A "web" challenge might need crypto for JWT forgery. A "forensics" PCAP might contain a pwn exploit to replay.
-2. **Try a different category skill** -- Many challenges span multiple categories. Invoke a second skill for the cross-cutting technique.
-3. **Look for what you missed** -- Hidden files, alternate ports, response headers, comments in source, metadata in images.
-4. **Simplify** -- If an exploit is too complex, check if there's a simpler path (default creds, known CVE, logic bug).
-5. **Check edge cases** -- Off-by-one, race conditions, integer overflow, encoding mismatches.
-
-**Common multi-category patterns:**
-- Forensics + Crypto: encrypted data in PCAP/disk image, need crypto to decrypt
-- Web + Reverse: WASM or obfuscated JS in web challenge
-- Web + Crypto: JWT forgery, custom MAC/signature schemes
-- Reverse + Pwn: reverse the binary first, then exploit the vulnerability
-- Forensics + OSINT: recover data from dump, then trace it via public sources
-- Misc + Crypto: jail escape requires building crypto primitives under constraints
-- OSINT + Stego: social media posts with unicode homoglyph steganography (Cyrillic lookalikes encode bits)
-- Web + Forensics: paywall bypass (curl reveals content hidden by CSS overlays)
-- Misc + Crypto + Game Theory: multi-phase interactive challenges with AES decryption → HMAC commitment → combinatorial game solving (GF(256) Nim)
-- Crypto + Geometry + Lattice: multi-layer challenges progressing from spatial reconstruction → subspace recovery → LWE solving → AES-GCM decryption
-- Forensics + Signal Processing: power traces / side-channel analysis requiring statistical analysis of measurement data
-- Forensics + Network + Encoding: timing-based encoding in PCAP (inter-packet intervals encode binary data)
-
-### Step 5: Generate Write-up
-
-After solving the challenge, invoke `/ctf-writeup` to generate a standardized submission-style writeup — concise, reproducible, and ready for competition organizers or teammates to validate.
-
-## Flag Formats
-
-Flags vary by CTF. Common formats:
-- `flag{...}`, `FLAG{...}`, `CTF{...}`, `TEAM{...}`
-- Custom prefixes: check the challenge description or CTF rules for the format (e.g., `ENO{...}`, `HTB{...}`, `picoCTF{...}`)
-- Sometimes just a plaintext string with no wrapper
-
-**Validation rule (important):**
-- If you find multiple flag-like strings, treat them as candidates and validate before finalizing.
-- Prefer the token tied to the intended artifact/workflow (not random metadata noise or obvious decoys).
-- Do a corpus-wide uniqueness check and include the source file/path when reporting.
-
-```bash
-# Search for common flag patterns in files
-grep -rniE '(flag|ctf|eno|htb|pico)\{' .
-# Search in binary/memory output
-strings output.bin | grep -iE '\{.*\}'
-```
-
-## Quick Reference
-
-```bash
-# Recon
-file *                                    # Identify file types
-strings binary | grep -i flag             # Quick string search
-xxd binary | head -20                     # Hex dump header
-binwalk -e firmware.bin                   # Extract embedded files
-checksec --file=binary                    # Check binary protections
-
-# Connect
-nc host port                              # Connect to challenge
-echo -e "answer1\nanswer2" | nc host port # Scripted input
-curl -v http://host:port/                 # HTTP recon
-
-# Python exploit template
-python3 -c "
-from pwn import *
-r = remote('host', port)
-r.interactive()
-"
-```
-
-## Challenge
-
-$ARGUMENTS
+解出后调 `/ctf-writeup` 出报告。没解出也要留：试过什么、否证了什么、卡在哪一步——否证清单比成功路径更值钱。

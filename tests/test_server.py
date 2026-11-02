@@ -459,11 +459,18 @@ def test_the_workspace_says_a_run_has_no_budget_before_the_operator_types(
     assert composer.count("disabled") == 3, composer
 
 
-def test_a_fresh_process_is_not_reported_as_stale() -> None:
-    """The banner must not cry wolf on every page load."""
-    from ctfagent.server import _code_staleness
+def test_a_fresh_process_is_not_reported_as_stale(monkeypatch) -> None:
+    """The banner must not cry wolf on every page load.
 
-    assert _code_staleness() == ""
+    ``_PROCESS_STARTED`` is pinned relative to the newest source mtime instead
+    of being read from the clock: the old version asserted "this process is
+    fresh" against wall time, so editing a module while the suite ran made the
+    test fail for a reason that had nothing to do with the banner it guards.
+    """
+    import ctfagent.server as srv
+
+    monkeypatch.setattr(srv, "_PROCESS_STARTED", srv._newest_source_mtime() + 1)
+    assert srv._code_staleness() == ""
 
 
 def test_edited_code_is_reported_as_stale(monkeypatch) -> None:
@@ -740,3 +747,46 @@ def test_the_fragments_endpoint_redraws_the_two_regions_a_confirm_changes(
     assert "写报告" in html
 
     assert client.get("/api/runs/999999/fragments").status_code == 404
+
+
+def test_the_workspace_shows_the_hypothesis_board(client, cfg, fixtures_dir: Path) -> None:
+    """Board mode moves the decision to the board; the page has to show it.
+
+    Without this pane an operator watching a board-mode run sees a lead that
+    stopped dispatching and no reason for it. The status labels are the board's
+    own — ``open`` means "waiting for a worker", not the task queue's "排队".
+    """
+    from ctfagent import swarm
+    from ctfagent.db import Store
+
+    client.post(
+        "/api/challenges",
+        data={"directory": str(fixtures_dir / "easy_crypto")},
+        follow_redirects=False,
+    )
+    challenge_id = client.get("/api/challenges").json()["challenges"][0]["id"]
+    client.post(
+        "/api/runs", data={"challenge_id": challenge_id, "objective": ""},
+        follow_redirects=False,
+    )
+    run_id = client.get("/api/runs").json()[0]["id"]
+
+    store = Store(cfg.db_path)
+    try:
+        store.add_hypothesis(
+            run_id,
+            swarm.Hypothesis(
+                family="crypto", statement="模数可分解",
+                criterion="枚举 10^6 内无因子", evidence="p、q 相差很小",
+            ),
+        )
+    finally:
+        store.close()
+
+    page = client.get(f"/runs/{run_id}").text
+    # The tab only exists when the board has something on it.
+    assert 'data-stab="board"' in page
+    assert "模数可分解" in page
+    # The falsifier travels with the entry, not only in the lead's context.
+    assert "枚举 10^6 内无因子" in page
+    assert "待认领" in page and "排队" not in page.split('data-spane="board"')[1].split("</section>")[0]

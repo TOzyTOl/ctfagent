@@ -440,6 +440,10 @@ class Task:
     turns: int = 0
     result: dict[str, Any] = field(default_factory=dict)
     error: str = ""
+    #: The board entry this task is executing, if any. Empty means the task was
+    #: dispatched the old way (centrally, without a hypothesis) — both shapes
+    #: coexist so the swarm can be rolled out per run.
+    hypothesis_id: int | None = None
 
     @property
     def terminal(self) -> bool:

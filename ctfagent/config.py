@@ -432,6 +432,59 @@ class LimitsConfig:
     #: CLI's own tool ceiling (600 s) so a genuinely hung tool is still caught
     #: by this clock rather than waiting forever.
     tool_wait_timeout_s: int = 900
+    #: Run-level patrol. Three settings, chosen so the first one can be turned on
+    #: without changing how a single challenge is solved:
+    #:
+    #: - ``"off"``     — nothing happens.
+    #: - ``"observe"`` — after every task, score what it contributed and record
+    #:                   ``patrol.score``. No model call, no dispatch, no money.
+    #:                   This is the only honest way to learn whether "three
+    #:                   quiet tasks" actually predicts a failed run.
+    #: - ``"act"``     — when the score says the run has stalled, dispatch one
+    #:                   read-only patrol that may only answer CONTINUE /
+    #:                   REPIVOT / STOP <task> / CLOSE <hypothesis>. Capped per
+    #:                   run by ``patrol.MAX_PATROLS``. ``CLOSE`` is the one
+    #:                   verdict that changes state: it abandons an open board
+    #:                   entry (never a claimed one, never as a refutation).
+    #:
+    #: Defaults to observe because a checker that has never been measured is a
+    #: second opinion, not a control.
+    patrol: str = "observe"
+    #: Board-driven dispatch (蜂群 B 阶段「蜂巢」). Independent of ``patrol``:
+    #: patrol judges the run, this decides *who* gets started.
+    #:
+    #: - ``"off"``   — the lead dispatches, as it always has (default).
+    #: - ``"board"`` — the lead posts hypotheses and never dispatches workers.
+    #:                 A coordinator watches the board and starts a worker for
+    #:                 every open entry it can afford, biased toward the
+    #:                 challenge's category. The lead keeps its tools and may
+    #:                 still dispatch; ``dispatch_task`` just reports the board
+    #:                 so it knows it does not have to.
+    #:
+    #: Off by default on purpose: this is the one setting that changes who
+    #: decides, and it must be measured on the bench before it becomes the
+    #: default (docs/蜂群-20261101-设计.md §9 — A 观测 → B 挂单 → C 自治).
+    swarm: str = "off"
+    #: Seconds a claim survives without a heartbeat. A worker renews it with
+    #: every fact it writes; a claim whose task is gone is released regardless
+    #: of this (``swarm.pending_claims``). Kept below ``stall_timeout_s`` so a
+    #: wedged session loses its direction before the stall clock kills it.
+    swarm_lease_s: float = 300.0
+    #: Most workers the board coordinator may keep alive at once. The pool caps
+    #: the real number (``workers_per_run``); this is the smaller, deliberate
+    #: bound on *this* mechanism so a board full of hypotheses cannot fan out
+    #: wider than the run was designed for.
+    #:
+    #: 3, not 2, and not 4. The board starts one worker per *family*, so this
+    #: bound pays off only when several directions are open at once — and the
+    #: historical record (49 real runs, 2026-10-18..11-01) says that is where it
+    #: reaches: per-run peak concurrent non-closing tasks was 1 in 25 runs, 2 in
+    #: 17, 3 in 6, 4 in 1. So a third slot is the last one that has ever filled,
+    #: and it is the difference between running three open directions and
+    #: serialising them. 4 is not recommended: the board would take the whole
+    #: ``workers_per_run=4`` pool and leave the lead's own triage dispatch no
+    #: slot — both compete for the same run pool.
+    swarm_max_workers: int = 3
 
 
 @dataclass
@@ -544,6 +597,12 @@ def _apply_env(cfg: AppConfig) -> AppConfig:
         cfg.limits.max_sessions = int(v)
     if v := _env("CTFAGENT_WORKERS_PER_RUN"):
         cfg.limits.workers_per_run = int(v)
+    # The two knobs the bench needs to A/B a scheduling change without editing
+    # config.toml between arms: one process per arm, same binary, same DB shape.
+    if v := _env("CTFAGENT_SWARM"):
+        cfg.limits.swarm = v
+    if v := _env("CTFAGENT_SWARM_MAX_WORKERS"):
+        cfg.limits.swarm_max_workers = int(v)
     if v := _env("CTFAGENT_DATA_DIR"):
         cfg.data_dir = Path(v)
     if v := _env("CTFAGENT_DB_PATH"):

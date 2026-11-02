@@ -1,4 +1,4 @@
-<!-- usage {"helped": 3, "used": 3} -->
+<!-- usage {"helped": 4, "used": 4} -->
 <!-- 沉淀自 run 30（http://hbc2.haobachang.com:21848/ sql绕过，2026-10-27）。由解出该题的运行蒸馏；flag 字面量已擦除。 -->
 
 # 纯数字白名单型 WAF 下的 UNION 注入

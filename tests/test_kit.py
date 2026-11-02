@@ -230,3 +230,82 @@ def test_every_shipped_template_is_valid_python_against_the_control():
         finally:
             server._server.shutdown()
             server._server.server_close()
+
+
+def test_binary_directions_get_the_runtime_first_rule() -> None:
+    """The ELFStudy lesson: compare runtime bytes with the file before reading code.
+
+    On 2026-10-31 an hour went into decoding a payload that only exists as code
+    after the loader rewrites it; the tell was a TEXTREL flag in ``readelf -d``.
+    """
+    from ctfagent import prompts
+
+    rev = prompts.worker_system_prompt(
+        "reverse", "", "challenge", "", "", category="reverse"
+    )
+    assert "TEXTREL" in rev
+    assert "15 分钟" in rev
+    assert "运行时的字节" in rev
+
+    pwn = prompts.worker_system_prompt("pwn", "", "challenge", "", "", category="pwn")
+    assert "TEXTREL" in pwn
+
+    web = prompts.worker_system_prompt("web", "", "challenge", "", "", category="web")
+    assert "TEXTREL" not in web
+
+
+def test_crypto_directions_are_told_to_enumerate_the_equivalence_class() -> None:
+    """vmshare: 256 submitted spellings were all wrong; the accepted one was a 257th.
+
+    gen() masked each seed with 0xffffff (top hex nibble dead) and the parser
+    folded case, so a 'reproduced ciphertext' verdict pinned an equivalence class,
+    not a string. The platform reported one member and the site rejected it.
+    """
+    from ctfagent import prompts
+
+    crypto = prompts.worker_system_prompt(
+        "crypto", "", "challenge", "", "", category="crypto"
+    )
+    assert "等价类" in crypto
+    assert "3174812_31af718" in crypto
+
+    reverse = prompts.worker_system_prompt(
+        "reverse", "", "challenge", "", "", category="reverse"
+    )
+    assert "等价类" not in reverse
+
+
+def test_web_directions_are_told_the_chain_order() -> None:
+    """ezcms: escape the literal, prove the oracle, then establish who executes.
+
+    Three ordering mistakes cost time on 2026-10-31: the PostgreSQL E-string
+    escape was skipped because plain quote-doubling "looked safe"; a full blind
+    read was invalidated by another tenant's rows matching the fixed ``%'``
+    wrapper; and a ``.jsp`` served as source text was written off as "not
+    executed" although Jasper runs the same file when it lands in webapps/ROOT.
+    """
+    from ctfagent import prompts
+
+    web = prompts.worker_system_prompt("web", "", "challenge", "", "", category="web")
+    assert "E-string" in web
+    assert "marker" in web
+    assert "euid=0" in web
+
+    pwn = prompts.worker_system_prompt("pwn", "", "challenge", "", "", category="pwn")
+    assert "E-string" not in pwn
+
+
+def test_web_directions_are_told_to_test_for_plan_index_desync() -> None:
+    """SimpleBlog: the sanitised-op array and the matched-route array drifted.
+
+    The exploit was not a classic injection: a failed op only pushed to one of
+    the two arrays, so route B's handler ran with route A's raw parameters.
+    """
+    from ctfagent import prompts
+
+    web = prompts.worker_system_prompt("web", "", "challenge", "", "", category="web")
+    assert "下标错位" in web
+    assert "载体路由" in web
+
+    pwn = prompts.worker_system_prompt("pwn", "", "challenge", "", "", category="pwn")
+    assert "下标错位" not in pwn

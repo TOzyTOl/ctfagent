@@ -8,145 +8,48 @@ metadata:
   user-invocable: "false"
 ---
 
-# CTF Web Exploitation
+# Web 渗透
 
-Use this skill as a routing and execution guide for web-heavy challenges. Keep the first pass short: map the app, confirm the trust boundary, and only then dive into the detailed technique notes.
+**入口只做判别，不要通读。** 选题看 [INDEX.md](INDEX.md)，一次最多两篇。
 
-## Prerequisites
-
-**Python packages (all platforms):**
-```bash
-pip install sqlmap flask-unsign requests
-```
-
-**Linux (apt):**
-```bash
-apt install hashcat jq curl
-```
-
-**macOS (Homebrew):**
-```bash
-brew install hashcat jq curl
-```
-
-**Go tools (all platforms, requires Go):**
-```bash
-go install github.com/ffuf/ffuf/v2@latest
-```
-
-**Manual install:**
-- ysoserial — [GitHub](https://github.com/frohoff/ysoserial), requires Java (Java deserialization payloads)
-
-## Additional Resources
-
-- [sql-injection.md](sql-injection.md) - SQL injection techniques: auth bypass, UNION extraction, filter bypasses, second-order SQLi, truncation, race-assisted leaks, INSERT ON DUPLICATE KEY UPDATE password overwrite, innodb_table_stats WAF bypass
-- [server-side.md](server-side.md) - PHP type juggling, php://filter LFI, Python str.format traversal, SSTI (Jinja2, Twig, ERB, Mako, EJS, Vue.js, Smarty), SSRF (Host header, DNS rebinding, curl redirect, unescaped-dot regex, SNI FTP smuggling, mod_vhost_alias), PHP hash_hmac NULL
-- [server-side-2.md](server-side-2.md) - XXE (basic, OOB, DOCX upload), XML injection via X-Forwarded-For, PHP variable variables, PHP uniqid predictable filename, sequential regex replacement bypass, command injection (newline, blocklist, sendmail CGI, multi-barcode, git CLI), GraphQL injection (introspection, batching, interpolation)
-- [server-side-exec.md](server-side-exec.md) - Direct code execution paths, upload-to-RCE, deserialization-adjacent execution, LaTeX injection, header and API abuses
-- [server-side-exec-2.md](server-side-exec-2.md) - More execution chains: SQLi fragmentation, path parser tricks, polyglot uploads, wrapper abuse, filename injection, BMP pixel webshell with filename truncation
-- [server-side-deser.md](server-side-deser.md) - Java/Python/PHP deserialization and race-condition playbooks, PHP SoapClient CRLF SSRF via deserialization
-- [server-side-advanced.md](server-side-advanced.md) - Advanced SSRF, traversal, archive, parser, framework, and modern app-server issues, Nginx alias traversal
-- [server-side-advanced-2.md](server-side-advanced-2.md) - Docker API SSRF, Castor/XML, Apache expression reads, parser discrepancies, Windows path tricks, rogue MySQL server file read
-- [server-side-advanced-3.md](server-side-advanced-3.md) - Part 3 (CSAW/35C3/ASIS/PlaidCTF 2018): WAV polyglot upload, multi-slash URL `path.startswith` bypass, Xalan XSLT `math:random()` seed guess, SoapClient `_user_agent` CRLF method smuggling, `gopher:///` no-host URL scheme bypass, SSRF credential leak via attacker-specified outbound URL
-- [server-side-advanced-4.md](server-side-advanced-4.md) - Part 4: WeasyPrint SSRF/file read (CVE-2024-28184), MongoDB regex/$where blind oracle, Pongo2 Go template injection, ZIP PHP webshell, basename() bypass, wget CRLF SSRF→SMTP, Gopher SSRF to MySQL blind SQLi, React Server Components Flight RCE (CVE-2025-55182), AMQP/TLS interception via sslsplit+arpspoof, CairoSVG XXE, Bazaar repo reconstruction
-- [client-side.md](client-side.md) - XSS, CSRF, cache poisoning, DOM tricks, admin bot abuse, request smuggling, paywall bypass
-- [client-side-advanced.md](client-side-advanced.md) - CSP bypasses, Unicode tricks, XSSI, CSS exfiltration, browser normalization quirks, postMessage null origin bypass
-- [auth-and-access.md](auth-and-access.md) - Auth/authz bypasses, hidden endpoints, IDOR, redirect chains, subdomain takeover, AI chatbot jailbreaks
-- [auth-and-access-2.md](auth-and-access-2.md) - Part 2 (2018-era): `std::unordered_set` bucket collision auth bypass, `nodeprep.prepare` Unicode homograph username collision, SRP A=0/A=N auth bypass, ArangoDB AQL MERGE privilege escalation
-- [auth-jwt.md](auth-jwt.md) - JWT/JWE manipulation, weak secrets, header injection, key confusion, replay
-- [auth-infra.md](auth-infra.md) - OAuth/OIDC, SAML, CORS, CI/CD secrets, IdP abuse, login poisoning
-- [node-and-prototype.md](node-and-prototype.md) - Prototype pollution, JS sandbox escape, Node.js attack chains
-- [web3.md](web3.md) - Solidity and Web3 challenge notes
-- [cves.md](cves.md) - CVE-driven techniques you can match against challenge banners, headers, dependency leaks, or version strings
-- [field-notes.md](field-notes.md) - Long-form exploit notes: quick references for SQLi, XSS, LFI, JWT, SSTI, SSRF, command injection, XXE, deserialization, race conditions, auth bypass, and multi-stage chains
-
-## When to Pivot
-
-- If the target is a native binary, custom VM, or firmware image, switch to `/ctf-reverse` first.
-- If the HTTP bug only gives you code execution and the hard part becomes memory corruption or seccomp escape, switch to `/ctf-pwn`.
-- If the "web" challenge really turns on JWT math, custom MACs, or crypto primitives, switch to `/ctf-crypto`.
-- If the web challenge involves analyzing logs, PCAPs, or recovering artifacts from a web server, switch to `/ctf-forensics`.
-- If the challenge requires gathering intelligence from public web sources, DNS records, or social media before exploitation, switch to `/ctf-osint`.
-
-## First-Pass Workflow
-
-1. Identify the real boundary: browser only, backend only, mixed app, or auth flow.
-2. Capture one normal request/response pair for every major feature before fuzzing.
-3. Enumerate hidden functionality from JS bundles, response headers, routes, and alternate methods.
-4. Classify the likely bug family: injection, authz, parser mismatch, upload, trust proxy, state machine, or client-side execution.
-5. Build the smallest proof first: leak, bypass, or primitive. Save full exploit chaining for later.
-
-## Quick Start Commands
+## 先建立基线
 
 ```bash
-# Recon
-curl -sI https://target.com
-ffuf -u https://target.com/FUZZ -w wordlist.txt
-curl -s https://target.com/robots.txt
-
-# SQLi quick test
-sqlmap -u "https://target.com/page?id=1" --batch --dbs
-
-# JWT decode (no verification)
-echo '<token>' | cut -d. -f2 | base64 -d 2>/dev/null | jq .
-
-# Cookie decode (Flask)
-flask-unsign --decode --cookie '<cookie>'
-flask-unsign --unsign --cookie '<cookie>' --wordlist rockyou.txt
-
-# SSTI probes
-curl "https://target.com/page?name={{7*7}}"
-curl "https://target.com/page?name={{config}}"
-
-# Request inspection
-curl -v -X POST https://target.com/api -H "Content-Type: application/json" -d '{}'
+curl -si http://target/ -o base.txt; head -20 base.txt
+curl -s http://target/robots.txt http://target/.git/config 2>/dev/null | head
 ```
 
-## First Questions to Answer
+**先存一份正常请求/响应，再开始 fuzz。** 没有基线，后面所有差异都不可信。
 
-- Is the flag likely in the browser, an API response, a local file, a database row, or an internal service?
-- Does the app trust user-controlled data in templates, redirects, file paths, headers, serialized objects, or background jobs?
-- Are there multiple parsers disagreeing with each other: proxy vs app, URL parser vs fetcher, sanitizer vs browser, serializer vs filter?
-- Can you turn the bug into a smaller primitive first: read one file, forge one token, call one internal endpoint, trigger one bot visit?
+## 判别树
 
-## High-Value Recon Checks
+| 症状 | 先试 | 读 |
+|---|---|---|
+| 输入被模板渲染 | `{{7*7}}`、`${7*7}`、`<%= 7*7 %>` | server-side.md |
+| 报错含 SQL 关键字 / 参数进查询 | 手工注入优先，别先上 sqlmap | sql-injection.md |
+| 服务端按 URL 取回内容 | SSRF，先读云元数据与内网 | server-side-advanced-2.md |
+| 有上传点 | 后缀、内容、解析差异三层 | server-side-advanced-4.md |
+| 有 cookie / token | JWT 的 alg none 与 RS→HS 混淆 | auth-jwt.md |
+| 逻辑全在前端 | 读 JS bundle、source map | client-side.md |
+| 有 admin bot | 构造 XSS 让 bot 去访问 | client-side.md |
+| 版本号/指纹明显 | 已知 CVE 优先 | cves.md |
+| 给了源码 | 先通读找 sink，别猜 | field-notes.md |
+| 链上合约 | EIP-1967 代理、ABI 编码差异 | web3.md |
+| 只给二进制/WASM | 转 `/ctf-reverse` | — |
 
-- Read the HTML, inline scripts, and bundled JS before guessing the API surface.
-- Compare what the UI submits with what the backend accepts; optional JSON fields often unlock hidden paths.
-- Check obvious metadata and helper paths early: `/robots.txt`, `/sitemap.xml`, `/.well-known/`, `/admin`, `/debug`, `/.git/`, `/.env`.
-- Try alternate verbs and content types on interesting routes: `GET`, `POST`, `PUT`, `PATCH`, `TRACE`, JSON, form, multipart, XML.
-- Treat file upload, PDF/export, webhook, OAuth callback, and admin bot features as likely exploit multipliers.
+## 纪律
 
-## Fast Pattern Map
+1. **先拿最小原语**：读一个文件、伪造一个 token、调一个内网接口。别一上来打完整链。
+2. 同一参数先换三种编码（URL、双重、Unicode），再换位置（header、body、path）。
+3. 对比「UI 提交的」和「后端接受的」——多出来的可选字段通常是后门。
+4. 卡住先怀疑**两个解析器不一致**（代理 vs 应用、URL 解析 vs 取回、过滤器 vs 浏览器）。
 
-- SQL errors, odd filtering, or state-dependent DB behavior: start with [sql-injection.md](sql-injection.md).
-- Templating, file reads, SSRF, command execution, XML, or parser bugs: start with [server-side.md](server-side.md) and [server-side-exec.md](server-side-exec.md).
-- XSS, CSP bypass, admin bot, client routing, DOM issues, or scriptless exfiltration: start with [client-side.md](client-side.md).
-- Session forgery, hidden admin routes, JWT, OAuth, SAML, or weak trust boundaries: start with [auth-and-access.md](auth-and-access.md), [auth-jwt.md](auth-jwt.md), and [auth-infra.md](auth-infra.md).
-- Node.js apps, prototype pollution, VM sandboxes, or SSRF into internal services: add [node-and-prototype.md](node-and-prototype.md).
-- Smart contract frontends or blockchain-integrated apps: add [web3.md](web3.md).
+## 转出
 
-## Common Chain Shapes
+- 拿到 RCE 后难点变成内存破坏 → `/ctf-pwn`
+- 本质是 JWT 数学 / 自定义 MAC → `/ctf-crypto`
+- 要分析日志、PCAP、服务器镜像 → `/ctf-forensics`
 
-- Recon -> hidden route -> auth bypass -> internal file read -> token or flag
-- XSS or HTML injection -> admin bot -> privileged action -> secret leak
-- Traversal or upload -> config/source leak -> secret recovery -> session forgery
-- SSRF -> metadata or internal API -> credential leak -> code execution
-- SQLi or NoSQL injection -> credential bypass -> second-stage template or upload abuse
+## 细节
 
-## Deep-Dive Notes
-
-Use [field-notes.md](field-notes.md) once you have confirmed the challenge is truly web-heavy and you need the long exploit catalog.
-
-- Recon, SQLi, XSS, traversal, JWT, SSTI, SSRF, XXE, and command injection quick notes
-- Deserialization, race conditions, file upload to RCE, and multi-stage chain examples
-- Node, OAuth/SAML, CI/CD, Web3, bot abuse, CSP bypasses, and modern browser tricks
-- CVE-shaped playbooks and older challenge patterns that still show up in modern CTFs
-
-## Common Flag Locations
-
-- Files: `/flag.txt`, `/flag`, `/app/flag.txt`, `/home/*/flag*`
-- Environment: `/proc/self/environ`, process command line, debug config dumps
-- Database: tables named `flag`, `flags`, `secret`, or seeded challenge content
-- HTTP: custom headers, archived responses, hidden routes, admin exports
-- Browser: hidden DOM nodes, `data-*` attributes, inline state objects, source maps
+[INDEX.md](INDEX.md)：19 篇、417K。`server-side-exec-2.md`(39K)、`sql-injection.md`(38K)、`client-side-advanced.md`(37K)、`field-notes.md`(35K)、`auth-and-access.md`(35K) **只 grep 片段**。

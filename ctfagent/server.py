@@ -70,6 +70,19 @@ TEMPLATES.env.filters["run_status"] = lambda v: RUN_STATUS_LABEL.get(str(v), str
 TEMPLATES.env.filters["task_status"] = lambda v: TASK_STATUS_LABEL.get(str(v), str(v))
 TEMPLATES.env.filters["flag_status"] = lambda v: FLAG_STATUS_LABEL.get(str(v), str(v))
 TEMPLATES.env.filters["fact_kind"] = lambda v: FACT_KIND_LABEL.get(str(v), str(v))
+#: Board entries have their own four states (open/claimed/supported/refuted);
+#: reusing the task labels would render ``open`` as "排队" and make a direction
+#: nobody has claimed look like one that is about to start.
+HYPOTHESIS_STATUS_LABEL = {
+    "open": "待认领",
+    "claimed": "在做",
+    "supported": "已证实",
+    "refuted": "已证伪",
+    "abandoned": "回板",
+}
+TEMPLATES.env.filters["hypothesis_status"] = (
+    lambda v: HYPOTHESIS_STATUS_LABEL.get(str(v), str(v))
+)
 TEMPLATES.env.filters["confidence"] = lambda v: CONFIDENCE_LABEL.get(str(v), str(v))
 
 
@@ -288,6 +301,7 @@ def _workspace_context(
         "challenge": challenge,
         "tasks": store.list_tasks(run.id),
         "facts": store.list_facts(run.id, limit=200),
+        "hypotheses": store.list_hypotheses(run.id),
         "flags": store.list_flags(run.id),
         "submissions": {f.id: store.latest_submission(f.id) for f in store.list_flags(run.id)},
         "competition": (

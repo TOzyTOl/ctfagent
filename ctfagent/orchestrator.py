@@ -38,7 +38,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Iterable
 
-from . import caselib, notes, prompts, re_tools, textmatch, worker_tools
+from . import caselib, notes, patrol, prompts, re_tools, swarm, textmatch, worker_tools
 from .backend import (
     AgentBackend,
     AgentEvent,
@@ -187,6 +187,23 @@ _ZOMBIE_SILENCE_S = 1200
 #: The closing turn after a time ceiling goes through the possibly-hung lead
 #: client; it gets this long before the close proceeds without it.
 _CEILING_SUMMARY_TIMEOUT_S = 240
+
+#: How often the board coordinator looks for a startable direction. Fast enough
+#: that a posted hypothesis is not measurably slower than ``dispatch_task``,
+#: slow enough that a whole bench run costs a few hundred cheap SQL reads.
+_BOARD_TICK_S = 2.0
+
+#: How long the coordinator leaves a family alone after a dispatch for it was
+#: refused. The refusal reasons (out of budget, endpoint rejecting sessions, no
+#: session slot) are minute-scale, not tick-scale; without this the tick loop
+#: re-emits the same refusal event every two seconds for the rest of the run,
+#: and the operator reads a wall of the same error as a new failure each time.
+_BOARD_REFUSAL_BACKOFF_S = 60.0
+
+#: How many settled directions the board digest keeps showing. Enough to cover
+#: the directions a run typically retires, small enough that a long run's digest
+#: does not turn into a graveyard the lead has to read past every turn.
+CLOSED_DIRECTIONS_LIMIT = 12
 
 #: How triage states its conclusion. The prompt asks for ``category=<cat>`` as
 #: the first finding; live runs have also written ``category=crypto：…`` (CJK
@@ -477,6 +494,39 @@ class Run:
         #: command over and over is waste no matter how deep the analysis is.
         self._last_call: dict[int, tuple[str, str]] = {}
         self._repeats: dict[int, int] = {}
+        #: Run-level progress: one trace per finished task, plus the per-task set
+        #: of distinct tool-result digests. A task that adds neither a fact nor a
+        #: new observation moved nothing, however many turns it burned; the
+        #: task-level guards cannot see that, because they die with the task.
+        self._traces: list[patrol.TaskTrace] = []
+        self._outputs: dict[int, set[int]] = {}
+        self._patrol = patrol.PatrolState()
+        self._patrol_tasks: set[int] = set()
+        #: Board-driven dispatch (蜂群 B). ``_board_task`` is the coordinator's
+        #: asyncio task. ``_board_starts`` counts how many times the board has
+        #: started a worker for each family — used only to cap retries of a
+        #: refuted direction, never to decide whether a family is busy (that is
+        #: read from live tasks). Empty when ``limits.swarm == "off"``, which is
+        #: the default and the old shape.
+        self._board_task: asyncio.Task[None] | None = None
+        self._board_starts: dict[str, int] = {}
+        #: family -> monotonic deadline before which the coordinator will not try
+        #: that family again. A refused dispatch (budget, endpoint outage, no
+        #: session slot) does not heal inside one tick, and the coordinator
+        #: ticks every two seconds: without this, a run that is out of money
+        #: writes a refusal event every two seconds for as long as it is alive.
+        self._board_backoff: dict[str, float] = {}
+        #: One outstanding "the board started work" message at a time, plus the
+        #: ids it covered so a later batch can be folded into it.
+        self._board_wake_pending = False
+        self._board_wake_ids: list[int] = []
+        #: The exact text of that outstanding message. The latch is cleared by
+        #: the queue handing it to the lead, not by a prefix match — a chat line
+        #: that quoted it could otherwise release the latch unread.
+        self._board_wake_text: str | None = None
+        #: Whether the current empty-board stretch has already been announced.
+        #: One ``board.idle`` per stretch, not one per tick.
+        self._board_idle_announced = False
         self._verifier_flags: dict[int, int] = {}
         self._pending_verifiers: dict[int, int] = {}
         #: task id -> the ceiling its session was started with. Budget has to be
@@ -495,6 +545,16 @@ class Run:
         #: run that ended at its dollar ceiling would otherwise hand that writer
         #: a zero ceiling, and it would never start.
         self._extra_budget: float = 0.0
+        #: The board's reservation ledger (``swarm.Budget``). Exists so the 15%
+        #: kept for the closing roles cannot be spent by an exploring worker
+        #: that the board started on its own; the run pool's ledger
+        #: (``_committed``) remains the authority on everything else. Created
+        #: only in board mode — an off-mode run must not grow a second ledger.
+        self._board_budget = (
+            swarm.Budget(ceiling=float(self.cfg.limits.run_budget_usd))
+            if self.swarm_enabled
+            else None
+        )
         #: task id -> (session id, what that transcript already cost). Set by
         #: ``dispatch(resume_task_id=...)``, consumed by ``_run_task``.
         self._resume: dict[int, tuple[str, float]] = {}
@@ -635,6 +695,7 @@ class Run:
         self._emit("run.started", {"run_id": self.id, "challenge": self.challenge.name})
         self._main_task = asyncio.create_task(self._main_loop())
         self._watchdog = asyncio.create_task(self._budget_watchdog())
+        self._start_board_loop()
 
     async def reopen(self) -> None:
         """Bring a closed run back to life so an operator message can be served.
@@ -716,6 +777,25 @@ class Run:
         )
         self._main_task = asyncio.create_task(self._main_loop(announce=False))
         self._watchdog = asyncio.create_task(self._budget_watchdog())
+        self._start_board_loop()
+
+    def _parallelism(self) -> dict[str, Any]:
+        """Worker-seconds against wall-clock, as a ratio and a peak.
+
+        ``ratio < 1`` means workers overlapped less than one-at-a-time would
+        suggest; ``peak == 1`` says the run was serial no matter how many tasks
+        it dispatched. Both numbers are needed: a run can dispatch six tasks and
+        still have a peak of one.
+        """
+        worker_s, tasks, peak = self.store.task_seconds(self.id)
+        wall = max(1.0, float(self.elapsed))
+        return {
+            "worker_seconds": round(worker_s, 1),
+            "wall_seconds": round(wall, 1),
+            "ratio": round(worker_s / wall, 2),
+            "peak_concurrent": peak,
+            "tasks": tasks,
+        }
 
     async def shutdown(self, status: str, summary: str = "", reason: str = "") -> None:
         """Stop accepting work, cancel workers, close the main session. Idempotent."""
@@ -724,6 +804,11 @@ class Run:
         self._closed = True
         self._accepting = False
         self._stop.set()
+        # How much of this run actually overlapped. Recorded at close, when the
+        # task clock is final: the lead is told to fan out before its first
+        # wait, run 18 measured 0.94x anyway, and a number per run is what turns
+        # that into something a change can be judged against.
+        self._emit("run.parallelism", self._parallelism())
         for task_id, task in list(self._tasks.items()):
             if task_id in self._post_stop_ok:
                 continue
@@ -740,6 +825,12 @@ class Run:
         # database still read ``needs_input`` with an empty ``finished_at``.
         if self._watchdog and self._watchdog is not current:
             self._watchdog.cancel()
+        # The board coordinator polls; stopping the run is its exit condition,
+        # but a tick may be halfway through a dispatch. Cancel it here rather
+        # than let it start one more worker into a closing run.
+        if self._board_task and self._board_task is not current:
+            self._board_task.cancel()
+            self._board_task = None
         cancelled = False
         try:
             if self._main_task and not self._main_task.done() and self._main_task is not current:
@@ -919,6 +1010,14 @@ class Run:
                     if item is _WAKE:
                         continue
                     final = await self._stream(session, item, task_id=None, role="main")
+                    # The lead has now read the board's hand-off. Only the
+                    # message that was itself the hand-off clears the latch:
+                    # matching on the text would let any chat line that happens
+                    # to quote it swallow the notice the next dispatch relies on.
+                    if self._board_wake_pending and item == self._board_wake_text:
+                        self._board_wake_pending = False
+                        self._board_wake_ids = []
+                        self._board_wake_text = None
                     if not self._lead_aborted:
                         retries = 0
                     if self._lead_aborted and self._lead_turn_empty:
@@ -1297,6 +1396,16 @@ class Run:
             if event.kind == "tool_use":
                 live["tools"] += 1
                 live["last_tool"] = str(event.payload.get("tool") or "")
+            elif event.kind == "tool_result":
+                # Deduplicated only for the progress score: re-running the same
+                # command and getting the same bytes is the archetype of a task
+                # that looks busy and moves nothing. Bounded so a long task
+                # cannot pin an unbounded set in memory.
+                seen = self._outputs.get(task_id)
+                if seen is None:
+                    seen = self._outputs[task_id] = set()
+                if len(seen) < 400:
+                    seen.add(hash(str(event.payload.get("content") or "")[:4000]))
         self.turns += event.turns or 0
         if event.kind in ("text_delta", "thinking_delta"):
             # Live-only: the durable copy is the finished message below. Only
@@ -1522,7 +1631,7 @@ class Run:
             prompt="",
             cwd=self.workspace.work,
             system_prompt=prompts.main_system_prompt(
-                self.id, block, skills, self._case_block()
+                self.id, block, skills, self._case_block(), swarm=self.swarm_enabled
             ),
             model=self.cfg.models.main,
             max_turns=self.cfg.limits.task_max_turns * 2,
@@ -1610,6 +1719,40 @@ class Run:
         """The ceiling handed to the SDK, in CLI dollars."""
         return self._budget_parts(role, resume_spent, exclude)[0]
 
+    def _reserve_ceiling(
+        self, task: Any, role: str, resume_spent: float, *, started_by_board: bool
+    ) -> tuple[float, float]:
+        """``(SDK ceiling, reservation)`` with the board's ledger folded in.
+
+        Two ledgers exist and they answer different questions. ``_committed``
+        is the run pool's: every live session's ceiling, so the next dispatch
+        sees a real remainder. ``swarm.Budget`` is the board's: claim-time
+        reservations that keep the closing roles' 15% out of an exploring
+        worker's reach.
+
+        Folding them by taking the *smaller* remainder is deliberate — a
+        session must be refused if either ledger says the money is gone. Only
+        sessions the board opened are checked against the board's ledger: the
+        lead still dispatches closing roles and triage itself, and those must
+        never be unable to start because a stale hold from an earlier board
+        worker is still on the books (settlement releases it, but a crash
+        between claim and dispatch would otherwise freeze the pool).
+        """
+        ceiling, reservation = self._budget_parts(role, resume_spent, exclude=task.id)
+        budget = getattr(self, "_board_budget", None)
+        if budget is None or not started_by_board:
+            return ceiling, reservation
+        # The board ledger is in gateway dollars, like ``reservation``. A
+        # wrap-up turn or a re-dispatch of the *same* task must not compete with
+        # the hold it already owns — that is the ``exclude`` rule above, applied
+        # to the second ledger.
+        free = budget.free() + budget.holds.get(task.id, 0.0)
+        if free >= reservation:
+            return ceiling, reservation
+        factor = self.cfg.models.cli_factor(self.cfg.models.model_for(role))
+        withheld = (reservation - free) * factor
+        return max(0.0, ceiling - withheld), free
+
     def _task_clock(self, role: str) -> int:
         """The wall clock one task of ``role`` gets, in seconds.
 
@@ -1637,6 +1780,18 @@ class Run:
         role = task.role
         skill = ROLE_SKILL.get(role, "")
         block = challenge_block(self.challenge, self.workspace.work)
+        # A task that is executing a board entry carries that entry's claim and
+        # its falsification criterion into the prompt: "prove this" without
+        # "this is how it would be wrong" is how a worker reports agreement
+        # instead of evidence.
+        hypothesis = (
+            self.store.get_hypothesis(task.hypothesis_id)
+            if getattr(task, "hypothesis_id", None)
+            else None
+        )
+        task_context = task.context
+        if hypothesis is not None:
+            task_context = f"{task_context}\n\n{swarm.describe(hypothesis)}".strip()
         # Sized to the whole run, not to a sample of it: the digest used to take
         # the newest 40 of 51-74 facts, which dropped the oldest ones — and the
         # oldest are the foundational records a new worker needs in order not to
@@ -1646,7 +1801,25 @@ class Run:
         # handed to the SDK's enforcement. Two different numbers is how a worker
         # paces itself against a limit that is not the one that cuts it off.
         max_turns = self._task_turns(role)
-        ceiling = self._task_budget(role, resume_spent, exclude=task.id)
+        # The board's reservation ledger exists to keep the closing reserve out
+        # of reach of exploring sessions. Only sessions the board opened are
+        # checked against it: the lead dispatches closing roles itself and
+        # manages its own resume/retry accounting (``exclude``,
+        # ``resume_spent``), so charging one ceiling in two ledgers would count
+        # the same money twice.
+        started_by_board = bool(getattr(task, "hypothesis_id", None))
+        ceiling, reservation = self._reserve_ceiling(
+            task, role, resume_spent, started_by_board=started_by_board
+        )
+        # Claim-time hold on the board's ledger, released in ``_run_task``'s
+        # ``finally`` whether or not the session ever started. Once per task:
+        # ``_worker_spec`` is also called for the post-ceiling wrap-up and for
+        # a resumed invocation, and holding the same ceiling again would count
+        # one session twice. A refused hold needs no bookkeeping — the refund
+        # in the ``finally`` is keyed on the amount that actually went in.
+        if started_by_board and self._board_budget is not None:
+            if task.id not in self._board_budget.holds:
+                self._board_budget.reserve(task.id, reservation)
         # What that ceiling is worth in gateway dollars. The worker plans its
         # work against the number it is shown, and the two differ 4.9x on flash
         # (see ``ModelsConfig.cli_cost_factor``): a web worker told "$8.00" plans
@@ -1696,7 +1869,7 @@ class Run:
                 # run 5 and paid turns for it).
                 system += self.ctx.sandbox.pwn_guidance()
         prompt = prompts.worker_prompt_text(
-            role, task.objective, task.context, resumed=bool(resume_session_id)
+            role, task.objective, task_context, resumed=bool(resume_session_id)
         )
         if role not in ("triage", "verifier", "writer"):
             # The verifier stays deliberately shortcut-free, and triage sees
@@ -1717,7 +1890,15 @@ class Run:
             "mcp__worker__request_help",
             "mcp__worker__task_complete",
             "mcp__worker__read_skill_doc",
+            "mcp__worker__post_hypothesis",
         ]
+        if patrol.is_patrol(task.objective):
+            # A patrol reads the board and answers; it does not run experiments.
+            # Dropping shell, network and the RE server is what makes its cost
+            # one round trip and its blast radius nothing.
+            allowed = list(patrol.PATROL_TOOLS)
+            max_turns = min(max_turns, patrol.PATROL_MAX_TURNS)
+            ceiling = min(ceiling, patrol.PATROL_CEILING_CLI_USD)
         servers: dict[str, Any] = {
             "worker": worker_tools.build_sdk_mcp_server(
                 worker_tools.WorkerTools(self, task.id)
@@ -1726,8 +1907,9 @@ class Run:
         # Binary reconnaissance is handed to the roles that actually need it.
         # Giving it to every worker would put ten more tools in front of a web
         # worker whose whole job is HTTP.
-        if role in RE_ROLES or (
-            role == "verifier" and self.challenge.category in RE_CATEGORIES
+        if not patrol.is_patrol(task.objective) and (
+            role in RE_ROLES
+            or (role == "verifier" and self.challenge.category in RE_CATEGORIES)
         ):
             servers["re"] = re_tools.build_sdk_mcp_server(re_tools.ReTools(self, task.id))
             allowed += [f"mcp__re__{name}" for name in re_tools.TOOL_NAMES]
@@ -1876,8 +2058,9 @@ class Run:
         objective: str,
         context: str = "",
         resume_task_id: int | None = None,
+        hypothesis_id: int | None = None,
     ) -> Any:
-        task = self.store.create_task(self.id, role, objective, context)
+        task = self.store.create_task(self.id, role, objective, context, hypothesis_id)
         if resume_task_id is not None:
             self._bind_resume(task, resume_task_id)
         self._done[task.id] = asyncio.Event()
@@ -2148,6 +2331,10 @@ class Run:
                         turn_gaps: list[float] = []
                         last_event_at: float | None = None
                         pass_started = time.time()
+                        #: Spawn attempts already spent on this task. A missing
+                        #: CLI is usually a short file lock, so the first two
+                        #: are retried with backoff instead of failing the task.
+                        spawn_retries = 0
                         while True:
                             if restart:
                                 stream = self.ctx.backend.run(spec)
@@ -2329,7 +2516,22 @@ class Run:
                                 # through to StopAsyncIteration and the task was
                                 # recorded FAILED with an empty error column.
                                 raw = str(event.payload.get("error") or "")
-                                error = self._note_infra_failure(raw) or raw or "会话异常结束"
+                                hint = self._note_infra_failure(raw)
+                                # A CLI that is *sometimes* unfindable is a file
+                                # lock (the 335 MB binary being scanned or
+                                # replaced), not a broken install: a retry two
+                                # seconds later spawns fine. Measured 2026-10-31
+                                # — two pwn sessions died at 05:54 and 05:57
+                                # while a probe worker at 05:59 came up normally.
+                                # Three attempts turn that into a delay instead
+                                # of a dead task.
+                                if hint and spawn_retries < 3 and not self._stop.is_set():
+                                    spawn_retries += 1
+                                    await _close_stream(stream)
+                                    await asyncio.sleep(2.0 * spawn_retries)
+                                    restart = True
+                                    continue
+                                error = hint or raw or "会话异常结束"
                                 status = TaskStatus.FAILED
                                 final_payload = {}
                                 last_text = ""
@@ -2445,6 +2647,14 @@ class Run:
             # become available to the next dispatch.
             self._committed.pop(task_id, None)
             self._worker_base.pop(task_id, None)
+            # The board's ledger books real spend and releases the unspent
+            # hold. Reads the task row, not ``_worker_base``: the cost was
+            # written there as it was priced, and a task that never started
+            # has zero.
+            budget = self._board_budget
+            if budget is not None and task_id in budget.holds:
+                spent = self.store.get_task_cost(task_id)
+                budget.settle(task_id, spent)
             event = self._done.get(task_id)
             if event:
                 event.set()
@@ -2649,6 +2859,36 @@ class Run:
              "summary": result["summary"][:1200]},
             task_id=task_id,
         )
+        if task_id in self._patrol_tasks:
+            # A patrol's text is a judgement about the run, not findings about
+            # the challenge: it must not set the category or seed flag scanning.
+            self._patrol_tasks.discard(task_id)
+            action, target, reason = patrol.parse_verdict(result["summary"])
+            refused = ""
+            if action == "CLOSE" and target is not None:
+                # The one place a patrol may change the board. It is still not a
+                # refutation: a refutation needs a worker's observation, and an
+                # abandoned entry carries none. The guard lives in
+                # ``patrol.apply_close`` so it is testable without a session.
+                refused = patrol.apply_close(self.store, self.id, target)
+                if not refused:
+                    self._emit(
+                        "hypothesis.abandoned",
+                        {"hypothesis_id": target, "by": "patrol", "reason": reason},
+                        task_id=task_id,
+                    )
+            self._emit(
+                "patrol.verdict",
+                {"action": action, "target_task_id": target, "reason": reason,
+                 "status": str(status), "refused": refused},
+                task_id=task_id,
+            )
+            return
+        self._score_progress(task_id, role, status, result)
+        # The board entry this task was holding is closed by what the task
+        # *did*, not by the fact that it stopped. Runs in every mode: a task the
+        # lead dispatched with ``hypothesis_id`` has the same lease to settle.
+        self._settle_hypothesis(task_id, status)
         if role == "verifier":
             # A verifier's report deliberately quotes negative samples
             # (``flag{wrong}`` and near-misses) to show what it ruled out.
@@ -2664,6 +2904,120 @@ class Run:
             # A cancelled task's text is a fragment, not a report: it may be
             # quoting bait it was about to rule out.
             self._scan_for_flags(task_id, result["summary"])
+
+    def _score_progress(self, task_id: int, role: str, status: str, result: dict[str, Any]) -> None:
+        """Score what one finished task contributed, then look for a stalled run.
+
+        Deterministic and free. The reason this exists at the run level: a run
+        can lose its way without any single task failing — workers keep
+        reporting conclusions, the blackboard stops moving, and every per-task
+        guard is happy because each task ended "done".
+
+        ``observe`` records the score and the trigger but never dispatches, so
+        the correlation between "three quiet tasks" and "the run fails" can be
+        measured before anything acts on it.
+        """
+        mode = str(getattr(self.cfg.limits, "patrol", "observe") or "observe").strip().lower()
+        if mode not in ("observe", "act"):
+            return
+        self._sweep_hypotheses()
+        row = self.store.get_task(task_id)
+        trace = patrol.TaskTrace(
+            task_id=task_id,
+            role=role,
+            status=str(status),
+            objective=str(getattr(row, "objective", "") or "")[:120],
+            facts_added=len(result.get("findings") or []),
+            new_outputs=len(self._outputs.pop(task_id, ())),
+            # One tool call is roughly one model round trip, which is the unit
+            # the stall report is phrased in.
+            turns=int(result.get("tools_called") or 0),
+        )
+        self._traces.append(trace)
+        self._emit(
+            "patrol.score",
+            {"task_id": task_id, "role": role, "score": trace.score,
+             "facts": trace.facts_added, "outputs": trace.new_outputs,
+             "turns": trace.turns, "mode": mode},
+            task_id=task_id,
+        )
+        if not self.accepting_work:
+            return
+        trigger = patrol.evaluate(
+            traces=self._traces,
+            has_candidate_flag=bool(self.store.list_flags(self.id)),
+            state=self._patrol,
+            unworked=self._unworked_hypotheses(),
+        )
+        if trigger is None:
+            return
+        self._emit(
+            "patrol.trigger",
+            {"reason": trigger.reason, "detail": trigger.detail,
+             "task_ids": list(trigger.task_ids), "severity": trigger.severity,
+             "mode": mode},
+        )
+        if mode != "act":
+            return
+        self._patrol.dispatched += 1
+        self._patrol.last_reason = trigger.reason
+        # Two id namespaces, two sets. ``trigger.task_ids`` holds board ids for
+        # ``unworked_hypothesis`` and task ids for every other reason; putting
+        # them in one set let a hypothesis id mark an unrelated task as already
+        # looked at, and vice versa.
+        if trigger.reason == patrol.UNWORKED:
+            self._patrol.covered_hypotheses.update(trigger.task_ids)
+        else:
+            self._patrol.covered.update(trigger.task_ids)
+        try:
+            asyncio.get_running_loop().create_task(self._spawn_patrol(trigger))
+        except RuntimeError:
+            # No loop (a synchronous caller in a test): undo the reservation so
+            # the budget is not spent on a patrol that never ran.
+            self._patrol.dispatched -= 1
+
+    def _unworked_hypotheses(self) -> tuple[tuple[int, str, float, str], ...]:
+        """Board entries still ``open``, with how long they have waited.
+
+        The design doc has carried this as the last unimplemented patrol target
+        since B phase landed: the patrol only ever looked at *task* traces, so
+        the one state this mode creates — a direction nothing will start — was
+        invisible to it. Empty in off mode (there is no board), and empty when
+        the store cannot age a row: an unmeasured age must not become "zero,
+        keep waiting" or "infinite, patrol now".
+        """
+        if not self.swarm_enabled:
+            return ()
+        ages = self.store.hypothesis_ages(self.id)
+        return tuple(
+            (
+                h.id,
+                h.family,
+                ages[h.id],
+                h.statement,
+            )
+            for h in self.store.list_hypotheses(self.id, status=swarm.OPEN)
+            if h.id in ages
+        )
+
+    async def _spawn_patrol(self, trigger: patrol.Trigger) -> None:
+        digest = self.blackboard_digest(limit=self.cfg.limits.blackboard_facts)
+        objective = patrol.mark(patrol.build_prompt(trigger, digest, self._traces))
+        try:
+            task = await self.dispatch(
+                "triage",
+                objective=objective,
+                context="巡检回合：只给结论，不派工。",
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._emit("patrol.error", {"error": f"{type(exc).__name__}: {exc}"})
+            return
+        self._patrol_tasks.add(task.id)
+        self._emit(
+            "patrol.dispatched",
+            {"task_id": task.id, "reason": trigger.reason, "trigger": trigger.detail},
+            task_id=task.id,
+        )
 
     def _apply_triage_category(
         self, task_id: int, findings: list[str], summary: str
@@ -3000,6 +3354,575 @@ class Run:
         return out
 
     # ------------------------------------------------------------- blackboard
+    def _hypotheses_text(self, *, for_main: bool = False, limit: int = 24) -> str:
+        """The board's open directions, rendered for whoever is reading.
+
+        Two readers, two questions. A worker needs to know which direction is
+        still free before it posts a duplicate; the lead needs to know what is
+        live, what came back refuted, and what nothing has picked up. Both are
+        shown the same facts — only the framing differs — because the board is
+        the only thing they share.
+        """
+        all_rows = self.store.list_hypotheses(self.id)
+        rows = [h for h in all_rows if h.viable()][-limit:]
+        # Closed directions stay visible on purpose. Filtering them out (the old
+        # behaviour) made the board look silent exactly where it had a verdict,
+        # so the lead re-posted the same idea, the post silently merged into the
+        # refuted row, and the direction was dispatched again — a refutation that
+        # cost a worker and changed nothing. A closed row is information, not
+        # noise: it is the list of things not to spend the next worker on.
+        closed = [h for h in all_rows if not h.viable()][-CLOSED_DIRECTIONS_LIMIT:]
+        if not rows and not closed and not for_main:
+            return ""
+        state = swarm.convergence(
+            self.store.list_hypotheses(self.id),
+            has_candidate_flag=bool(self.store.list_flags(self.id)),
+            # Any live worker makes the board read *working*: work in a
+            # direction nobody wrote down still occupies the run, and telling a
+            # worker "nobody is on this" while the lead's own task holds the
+            # pool is how a second front gets opened.
+            running=self._total_workers_running() > 0,
+        )
+        state_label = {
+            "working": "有 worker 在做",
+            "postable": "有人可以做，等认领",
+            "needs_input": "等操作员确认",
+            "idle": "板上没有活",
+        }.get(state, state)
+        lines = [f"## 假设板（当前：{state_label}）"]
+        if not rows and not closed:
+            lines.append("- （空。空板是一个结果，不是再挂一批的理由）")
+            return "\n".join(lines)
+        label = {
+            swarm.OPEN: "待认领",
+            swarm.CLAIMED: "在做",
+            swarm.SUPPORTED: "已证实",
+            swarm.REFUTED: "已证伪",
+            swarm.ABANDONED: "已放弃",
+        }
+        for h in rows:
+            who = f" ← 工单#{h.claimed_by}" if h.claimed_by else ""
+            tally = ""
+            if h.supports or h.refutes:
+                tally = f"（证实 {h.supports} / 证伪 {h.refutes}）"
+            lines.append(
+                f"- #{h.id} [{label.get(h.status, h.status)}] {h.family}{tally}{who} "
+                f"{h.statement}"
+            )
+            if for_main:
+                lines.append(f"  证伪判据：{h.criterion}")
+        if not rows:
+            lines.append("- （没有开放方向。开放方向为空不是再挂一批的理由）")
+        if closed:
+            lines.append("已关闭方向（不要重派、不要换个说法再挂；要重走必须带新证据）：")
+            for h in closed:
+                lines.append(
+                    f"- #{h.id} [{label.get(h.status, h.status)}] {h.family} "
+                    f"（证实 {h.supports} / 证伪 {h.refutes}）{h.statement}"
+                )
+        return "\n".join(lines)
+
+    def post_hypothesis(
+        self,
+        *,
+        family: str,
+        statement: str,
+        criterion: str,
+        evidence: str,
+        origin: str = "lead",
+        basis: str = "inferred",
+        priority: int = 0,
+    ) -> dict[str, Any]:
+        """Put a falsifiable direction on the board.
+
+        Swarm rollout, phase A: the lead still dispatches, but what the run
+        *believed* now has a place to live that is not the objective text. Two
+        workers chasing the same idea are only detectable if the idea was
+        written down before either started.
+        """
+        h = swarm.Hypothesis(
+            family=str(family or "").strip(),
+            statement=str(statement or "").strip(),
+            criterion=str(criterion or "").strip(),
+            evidence=str(evidence or "").strip(),
+            origin=origin,
+            basis=basis if basis in BASIS_VALUES else "inferred",
+            priority=int(priority or 0),
+        )
+        try:
+            row, created = self.store.add_hypothesis(self.id, h)
+        except ValueError as exc:
+            # Validation is the point: a direction nobody can falsify is not
+            # work. Reported as a tool error, not as a dispatch failure.
+            return {"error": str(exc)}
+        self._emit(
+            "hypothesis.posted" if created else "hypothesis.merged",
+            {"hypothesis_id": row.id, "family": row.family, "statement": row.statement,
+             "criterion": row.criterion, "origin": origin, "created": created},
+        )
+        out = {"hypothesis_id": row.id, "family": row.family, "created": created}
+        if not row.viable():
+            # Merging into a settled row does not reopen it (``add_hypothesis``
+            # only merges evidence and tallies). Say so in the tool result:
+            # without this the lead reads "merged" as "accepted", dispatches the
+            # direction again, and the refutation buys nothing.
+            out["status"] = row.status
+            out["note"] = (
+                f"这条方向在板上已关闭（{row.status}，证实 {row.supports} / 证伪 {row.refutes}）。"
+                "合并没有重开它，也不能再派工。若确有新证据要重走，请写清新证据、"
+                "换一条可区分的新表述重新 post。"
+            )
+            self._emit(
+                "hypothesis.repost_closed",
+                {"hypothesis_id": row.id, "status": row.status, "origin": origin},
+            )
+        return out
+
+    def bind_hypothesis(self, task_id: int, hypothesis_id: int) -> dict[str, Any]:
+        """Point a task at a board entry and lease it to that task."""
+        row = self.store.get_hypothesis(hypothesis_id)
+        if row is None:
+            return {"error": f"假设 #{hypothesis_id} 不存在"}
+        # A settled direction is closed, not free work. This is the gate that
+        # turns "the lead re-posts a refuted idea and dispatches it anyway" into
+        # a hard rejection: the only way back onto a closed direction is a new
+        # hypothesis carrying new evidence.
+        if not row.viable():
+            return {
+                "error": (
+                    f"假设 #{hypothesis_id} 已关闭（{row.status}，证实 {row.supports} / "
+                    f"证伪 {row.refutes}），不能派工。要重走必须带新证据 post 一条新假设。"
+                )
+            }
+        # The coordinator leases with a negative placeholder id before the task
+        # row exists (it has to claim before it can dispatch). Any negative
+        # owner is "claimed by a dispatch in progress", not a rival task.
+        held_by_other = (
+            row.claimed_by is not None
+            and row.claimed_by != task_id
+            and row.claimed_by > 0
+        )
+        if row.status == swarm.CLAIMED and held_by_other:
+            return {"error": f"假设 #{hypothesis_id} 已被工单 #{row.claimed_by} 认领"}
+        if not self.store.lease_hypothesis(hypothesis_id, task_id, time.time()):
+            return {"error": f"假设 #{hypothesis_id} 已被别人抢先认领"}
+        self._emit(
+            "hypothesis.claimed",
+            {"hypothesis_id": hypothesis_id, "task_id": task_id,
+             "family": row.family, "statement": row.statement},
+            task_id=task_id,
+        )
+        return {"hypothesis_id": hypothesis_id, "family": row.family}
+
+    def _sweep_hypotheses(self) -> None:
+        """Return lapsed leases to the board. Cheap; called on task boundaries."""
+        for hypothesis_id in self.store.expire_hypotheses(time.time()):
+            self._emit("hypothesis.expired", {"hypothesis_id": hypothesis_id})
+
+    # ------------------------------------------------- board-driven dispatch
+    #
+    # 蜂群 B 阶段（「蜂巢」）：the lead writes what it believes, workers are
+    # started by the board rather than by the lead's next turn. The point is not
+    # more agents — it is that a direction nobody has to *decide* to start
+    # cannot wait behind the lead's slowest turn (35% of run cost, measured).
+    #
+    # Everything here is deterministic and free: the coordinator reads rows and
+    # starts tasks. What it must never do is invent work — an empty board is a
+    # result, and the convergence rules say so.
+
+    @property
+    def swarm_enabled(self) -> bool:
+        return str(getattr(self.cfg.limits, "swarm", "off") or "off").strip().lower() == "board"
+
+    def _start_board_loop(self) -> None:
+        """Arm the coordinator. No-op unless the swarm mode is on."""
+        if not self.swarm_enabled:
+            return
+        if self._board_task is not None and not self._board_task.done():
+            return
+        self._board_task = asyncio.create_task(self._board_loop())
+
+    def _stop_board_loop(self) -> None:
+        task, self._board_task = self._board_task, None
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def _board_loop(self) -> None:
+        """Watch the board and start a worker for every open entry we can afford.
+
+        Polls rather than waits on a signal: the producers are worker tool
+        calls and the lead's turn, and every wake-up path would have to be wired
+        into both. A two-second tick costs one SQL query and cannot deadlock on
+        a missed notification.
+        """
+        try:
+            while not self._stop.is_set():
+                await asyncio.sleep(_BOARD_TICK_S)
+                try:
+                    await self._board_tick()
+                except Exception as exc:  # noqa: BLE001 - the loop must outlive bugs
+                    self._emit("board.error", {"error": f"{type(exc).__name__}: {exc}"})
+        except asyncio.CancelledError:
+            raise
+
+    async def _board_tick(self) -> list[int]:
+        """One coordination pass. Returns the task ids it started.
+
+        Split from the loop so the rules are testable and reviewable without
+        timers. Order matters: release first (a dead worker's direction goes
+        back on the board before we look at it again), then converge, then
+        start — a tick that started first would pay for a claim it is about to
+        release.
+        """
+        if self._stop.is_set() or self._finish_status:
+            return []
+        self._release_dead_claims()
+        self._sweep_hypotheses()
+        # The soft ceiling binds the coordinator exactly as it binds the lead's
+        # ``dispatch_task``: past 85% of the run budget only closing roles may
+        # start. The board starts nothing but exploration roles, so without
+        # this gate a decentralised run would spend the 15% that is reserved
+        # for the verifier — the one session that turns a claimed flag into a
+        # confirmed one. Entries stay open, so the lead still sees them.
+        if not self.accepting_exploration:
+            return []
+        header = self.store.list_hypotheses(self.id)
+        # ``idle`` is a result, not an instruction. Say so once, and only when
+        # the lead alone can still act: a board with no open entry and nothing
+        # running is the one state where the run waits on a hypothesis the
+        # operator (through the lead) has not posted. Without this event the UI
+        # shows an empty board and a quiet run with no explanation; without the
+        # latch it would repeat every two seconds.
+        if not any(h.viable() for h in header) and not any(
+            not t.terminal for t in self.store.list_tasks(self.id)
+        ):
+            if not self._board_idle_announced:
+                self._board_idle_announced = True
+                self._emit(
+                    "board.idle",
+                    {"message": "板上没有可认领的假设，也没有在跑的工单"},
+                )
+            return []
+        self._board_idle_announced = False
+        # The gate is "is there anything to start", not the board's overall
+        # state string. ``convergence`` answers "what does the board mean" for
+        # the lead's prompt, where a live worker makes the whole board
+        # *working*; the coordinator has a capacity budget instead, and a
+        # lead-dispatched task is one slot, not a reason to stop starting the
+        # open entries beside it. Only two things stop a tick: no open entry
+        # (nothing to start — an empty board is a result, not an instruction),
+        # and no free slot (the loop below).
+        if not any(h.status == swarm.OPEN for h in header):
+            return []
+        started: list[int] = []
+        limit = max(1, int(getattr(self.cfg.limits, "swarm_max_workers", 3)))
+        # A refused dispatch is final for this tick: budget, the soft ceiling
+        # and an infra outage do not heal inside one pass, and retrying would
+        # burn every open entry into "claimed, no task" and back.
+        while self._board_has_slot(limit):
+            row = self._claim_next()
+            if row is None:
+                break
+            task = await self._dispatch_claim(row)
+            if task is None:
+                # Put the entry straight back — a claim with no task behind it
+                # reads as "working" forever, and the board would stop starting
+                # anyone.
+                self.store.set_hypothesis_status(row.id, swarm.OPEN, clear_claim=True)
+                self._board_backoff[row.family] = (
+                    time.monotonic() + _BOARD_REFUSAL_BACKOFF_S
+                )
+                break
+            started.append(task.id)
+        if started:
+            self._wake_lead(started)
+        return started
+
+    def _wake_lead(self, task_ids: list[int]) -> None:
+        """Tell an idle lead that the board started work on its behalf.
+
+        In this mode the lead writes hypotheses and then has nothing to wait on:
+        it never called ``dispatch_task``, so it holds no task ids, and a lead
+        that goes quiet waiting for a turn nobody will send stalls the run while
+        its own workers are alive. The message is queued, never delivered as an
+        interrupt — a lead mid-turn keeps its turn and reads this next.
+
+        At most one is outstanding. The board can start a worker on every tick
+        and a lead turn takes minutes; piling one message per dispatch behind a
+        slow turn replays the same instruction several times when it finally
+        reads. A second batch is folded into the first instead: by the time the
+        lead looks, the task ids it needs are in the digest anyway.
+        """
+        if self._lead_turn_active or self._main_client is None or self._closed:
+            return
+        if self._board_wake_pending:
+            self._board_wake_ids = list(dict.fromkeys([*self._board_wake_ids, *task_ids]))
+            return
+        self._board_wake_pending = True
+        self._board_wake_ids = list(task_ids)
+        names = "、".join(f"#{tid}" for tid in task_ids)
+        text = (
+            f"板子已经派出 {names}（来自你挂在板上的假设）。用 wait_tasks([{', '.join(str(t) for t in task_ids)}]) "
+            "等它们，不要为同一个方向再派一个 —— 同族同时只有一个在跑。"
+        )
+        self._board_wake_text = text
+        try:
+            self._chat_queue.put_nowait(text)
+        except asyncio.QueueFull:  # pragma: no cover - unbounded queue
+            self._board_wake_pending = False
+            self._board_wake_text = None
+
+    def _board_running(self) -> int:
+        """Worker directions the *board* currently has alive in this run.
+
+        Counted from task rows (not from a local counter) so a task that died
+        without telling us is not counted as occupying a slot. Only tasks bound
+        to a hypothesis count: a lead-dispatched triage worker does not consume
+        the board's own bound, it consumes the run's pool, and that is enforced
+        separately (``_board_has_slot``).
+        """
+        return sum(
+            1
+            for t in self.store.list_tasks(self.id)
+            if not t.terminal
+            and t.role not in CLOSING_ROLES
+            and getattr(t, "hypothesis_id", None)
+        )
+
+    def _total_workers_running(self) -> int:
+        """Every live worker in the run, board-started or lead-dispatched."""
+        return sum(
+            1
+            for t in self.store.list_tasks(self.id)
+            if not t.terminal and t.role not in CLOSING_ROLES
+        )
+
+    def _board_has_slot(self, limit: int) -> bool:
+        """Whether the coordinator may start one more worker.
+
+        Two bounds, both deliberate. ``swarm_max_workers`` caps what this
+        mechanism opens on its own; ``workers_per_run`` caps the run, and a
+        lead that has already filled it must not have the board pile a queue of
+        claimed-but-waiting sessions behind the semaphore — those hold their
+        hypotheses while doing nothing.
+        """
+        if self._board_running() >= limit:
+            return False
+        return self._total_workers_running() < max(1, int(self.cfg.limits.workers_per_run))
+
+    def _claim_next(self) -> Any:
+        """Lease the best open hypothesis for a *new* worker of its own family.
+
+        A board entry names a family, and the family names the role: the worker
+        that starts is the specialist for that direction, not a generalist. The
+        role's own budget is what the dispatch will hand it, so an entry no role
+        can afford is simply not started this tick.
+
+        Occupancy is read from the task table, not from a counter: a family is
+        busy only while a worker of that family is *alive*. A lifetime counter
+        would let two started-then-crashed workers retire a direction for the
+        rest of the run, while the board shows four open entries nobody may
+        touch. The counter below survives for one purpose only — capping how
+        many times a refuted direction may be retried.
+        """
+        rows = self.store.list_hypotheses(self.id, status=swarm.OPEN)
+        if not rows:
+            return None
+        live = self._live_board_families()
+        now = time.monotonic()
+        for row in rows:
+            # One live direction at a time per family: two workers on one family
+            # is the duplicate dispatch the lead was already warned about, now
+            # enforced instead of suggested.
+            if row.family in live:
+                continue
+            # A family whose last start was refused waits out the backoff. Other
+            # families keep their chance: the refusal may be about this
+            # direction's budget, and holding the whole board would turn one
+            # expensive entry into a silent stop for everyone.
+            if self._board_backoff.get(row.family, 0.0) > now:
+                continue
+            # A direction that has been refuted may be retried — with new
+            # evidence, which ``swarm.describe`` puts in front of the worker —
+            # but a family that keeps coming back refuted has spent its budget.
+            if row.refutes and self._board_starts.get(row.family, 0) >= 2:
+                continue
+            # Lease *this* row, not "the best open one": ``claim_hypothesis``
+            # picks its own winner, so asking it for the entry we just filtered
+            # returns a different hypothesis and silently starts the second
+            # worker of a family we just decided to hold back (observed while
+            # writing the coordinator's own test).
+            if self.store.lease_hypothesis(row.id, -row.id, time.time()):
+                return self.store.get_hypothesis(row.id)
+        return None
+
+    def _live_board_families(self) -> set[str]:
+        """Families that already have a live worker.
+
+        Two sources, and both count: a worker started by the board (its task row
+        names the hypothesis, whose family is the direction) and one the lead
+        dispatched centrally (its role *is* the direction). A live lead worker
+        is the same duplicate dispatch as a second board worker — the guard has
+        to see both or the "one live direction per family" rule holds only for
+        the shape that happened to be tested.
+        """
+        family_of = {h.id: h.family for h in self.store.list_hypotheses(self.id)}
+        out: set[str] = set()
+        for task in self.store.list_tasks(self.id):
+            if task.terminal:
+                continue
+            if task.role in swarm.DIRECTION_ROLES:
+                out.add(task.role)
+            bound = getattr(task, "hypothesis_id", None)
+            if bound:
+                family = family_of.get(int(bound))
+                if family:
+                    out.add(family)
+        return out
+
+    async def _dispatch_claim(self, row: Any) -> Any:
+        """Start the specialist for ``row``'s family and re-lease the entry to it."""
+        role = row.family if row.family in swarm.DIRECTION_ROLES else "triage"
+        # The coordinator only starts exploring roles, and those are exactly the
+        # sessions the board ledger holds back. Zero free means every usable
+        # dollar is already promised (live holds) or spent; starting anyway
+        # would hand the SDK a zero ceiling, which dies in a second as
+        # "budget exhausted" and makes the tick retry the same entry forever.
+        budget = self._board_budget
+        if budget is not None and budget.free() <= 0.0:
+            self._emit(
+                "board.refused",
+                {"hypothesis_id": row.id, "role": role,
+                 "error": "板子的可用额度已用完（收尾角色的 15% 不在这里花）"},
+            )
+            return None
+        objective = f"{row.family} 方向：证伪或证实假设 #{row.id}"
+        context = swarm.describe(row)
+        try:
+            task = await self.dispatch(role, objective=objective, context=context)
+        except Exception as exc:  # noqa: BLE001 - a refused dispatch is data
+            self._emit(
+                "board.refused",
+                {"hypothesis_id": row.id, "role": role,
+                 "error": f"{type(exc).__name__}: {exc}"},
+            )
+            return None
+        # Bind immediately: the row now carries ``hypothesis_id``, which is what
+        # deadline/timeout cleanup reads to put a dead worker's direction back.
+        # Leaving it None until a later step is how the worker test caught this —
+        # a task that died between dispatch and bind held a claim nobody could
+        # trace.
+        try:
+            self.store.set_task_hypothesis(task.id, row.id)
+            task = self.store.get_task(task.id) or task
+        except Exception:  # noqa: BLE001 - the lease can still be set below
+            pass
+        if self.bind_hypothesis(task.id, row.id).get("error"):
+            # Someone else took it between claim and dispatch (or the lease
+            # lapsed). The task already exists and will work the objective it
+            # was given; it just does not own the entry.
+            self._emit(
+                "board.unbound", {"hypothesis_id": row.id, "task_id": task.id}
+            )
+        self._board_starts[row.family] = self._board_starts.get(row.family, 0) + 1
+        self._board_backoff.pop(row.family, None)
+        self._emit(
+            "board.dispatched",
+            {"hypothesis_id": row.id, "task_id": task.id, "role": role,
+             "family": row.family, "statement": row.statement},
+            task_id=task.id,
+        )
+        return task
+
+    def _release_dead_claims(self) -> None:
+        """Put entries back on the board whose worker is gone.
+
+        The lease is the backstop, not the trigger: a worker that crashed the
+        second after claiming would otherwise block its direction for the full
+        TTL while the board reported *working* and nothing was running. The
+        coordinator's own claim (``task_id=-row.id`` placeholder) is excluded —
+        it is bound to a real task a moment later and must not be swept in that
+        window, or the same direction gets started twice.
+        """
+        live = {t.id for t in self.store.list_tasks(self.id) if not t.terminal}
+        for row in swarm.pending_claims(self.store.list_hypotheses(self.id), live):
+            if row.claimed_by is not None and row.claimed_by < 0:
+                continue
+            self.store.set_hypothesis_status(row.id, swarm.OPEN, clear_claim=True)
+            self._emit(
+                "hypothesis.released",
+                {"hypothesis_id": row.id, "was_claimed_by": row.claimed_by},
+            )
+
+    def _settle_hypothesis(self, task_id: int, status: str) -> None:
+        """Close the board entry a finished task was holding.
+
+        Called from ``_finish_task`` for every task. What the worker *wrote*
+        outranks its exit status: a worker that recorded a grounded ``dead_end``
+        refuted its direction, while a worker that ran out of turns refuted
+        nothing and the entry goes back for someone cheaper.
+        """
+        task = self.store.get_task(task_id)
+        if task is None or not getattr(task, "hypothesis_id", None):
+            return
+        row = self.store.get_hypothesis(int(task.hypothesis_id))
+        if row is None or not row.viable():
+            # A row that already reached a terminal status was settled by someone
+            # else; settling it again would double-count the tally. A row that
+            # never became claimable does not exist.
+            return
+        if row.status == swarm.CLAIMED and row.claimed_by not in (None, task_id):
+            # A different live worker now holds the lease. Its outcome is the one
+            # that settles the direction, not this stale task's.
+            return
+        facts = [f for f in self.store.list_facts(self.id) if f.task_id == task_id]
+        outcome = ""
+        for fact in reversed(facts):
+            # ``settled_by`` only proposes; the grounding check happens here and
+            # is the same rule the blackboard already applies. A dead_end the
+            # writer declared ``observed`` but could not ground was downgraded to
+            # ``inferred`` when it was recorded — and an ungrounded negative must
+            # not close a direction, or the board fills with "disproven" routes
+            # nobody actually tried.
+            proposed = swarm.settled_by(str(fact.kind), bool(fact.resolves))
+            if not proposed:
+                continue
+            if proposed == swarm.SETTLE_REFUTED:
+                if fact.basis not in ("observed", "derived"):
+                    continue
+                if (fact.evidence or {}).get(NEGATIVE_GAP_KEY):
+                    continue
+            outcome = proposed
+            break
+        if not outcome:
+            # A candidate flag is the one piece of evidence that lives outside
+            # the fact stream: ``submit_flag`` writes to ``flags`` and spawns a
+            # verifier. Counting only facts made the most successful worker on
+            # the board look like one that had written nothing.
+            submitted = any(
+                flag.task_id == task_id for flag in self.store.list_flags(self.id)
+            )
+            outcome = swarm.settle_for(status, evidence=bool(facts) or submitted)
+        if outcome == swarm.SETTLE_REFUTED:
+            self.store.bump_hypothesis(row.id, refutes=1)
+            self.store.set_hypothesis_status(row.id, swarm.REFUTED)
+            self._emit("hypothesis.refuted", {"hypothesis_id": row.id, "task_id": task_id})
+        elif outcome == swarm.SETTLE_DONE:
+            self.store.bump_hypothesis(row.id, supports=1)
+            self.store.set_hypothesis_status(row.id, swarm.SUPPORTED)
+            self._emit("hypothesis.supported", {"hypothesis_id": row.id, "task_id": task_id})
+        else:
+            # Ceilings, crashes and operator stops say nothing about the
+            # direction. Back on the board; the refute count carries forward so
+            # a direction that keeps failing climbs less cheaply each time.
+            # The lease owner goes with it — an entry that reads ``open`` but
+            # still names the dead task is a claim nobody can take over.
+            self.store.set_hypothesis_status(row.id, swarm.OPEN, clear_claim=True)
+            self._emit(
+                "hypothesis.released",
+                {"hypothesis_id": row.id, "task_id": task_id, "status": str(status)},
+            )
+
     def record_fact(
         self,
         task_id: int | None,
@@ -3088,6 +4011,12 @@ class Run:
             self._tools_at_fact[task_id] = int(
                 (self._live.get(task_id) or {}).get("tools") or 0
             )
+            # Writing a fact is the heartbeat: a worker still producing knowledge
+            # still owns its hypothesis. No separate tool, no extra round trip.
+            task_row = self.store.get_task(task_id)
+            bound = getattr(task_row, "hypothesis_id", None)
+            if bound:
+                self.store.renew_hypothesis(bound, time.time())
         return fact_id
 
     def _restated_by(self, content: str, kind: FactKind, basis: str = "") -> Fact | None:
@@ -3142,6 +4071,9 @@ class Run:
         facts = self.store.list_facts(self.id, limit=limit)
         flags = self.store.list_flags(self.id)
         lines: list[str] = []
+        hypothesis_block = self._hypotheses_text(for_main=for_main)
+        if hypothesis_block:
+            lines += [hypothesis_block, ""]
         if flags:
             lines.append("## 候选 flag")
             for flag in flags:

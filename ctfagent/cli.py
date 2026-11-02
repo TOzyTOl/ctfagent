@@ -679,6 +679,18 @@ def _doctor(cfg) -> int:
             f"WSL pwn 环境     {sandbox.wsl}：{tools or '（pwntools/patchelf/ROPgadget/GEF 一个都没探到，pwn worker 将拿不到 Linux 工作流）'}"
         )
     print(f"最大会话数      {cfg.limits.max_sessions}")
+    if str(getattr(cfg.limits, "swarm", "off")).strip().lower() == "board":
+        # Two knobs, the smaller one wins (``Run._board_has_slot``). Printing
+        # only the effective number hides which knob to turn; printing only
+        # ``swarm_max_workers`` hides that the run pool is the real ceiling.
+        width = min(
+            int(cfg.limits.swarm_max_workers), int(cfg.limits.workers_per_run)
+        )
+        print(
+            f"蜂群板          一次最多 {width} 个方向（swarm_max_workers="
+            f"{cfg.limits.swarm_max_workers} / workers_per_run="
+            f"{cfg.limits.workers_per_run}，取小的那个）"
+        )
     print(f"模型 base_url   {cfg.models.base_url or '（取自环境变量或 CLI 默认值）'}")
     # Which model each role actually gets. The failure this reports on is a
     # config that looks right and is not: every role pinned to one model for
@@ -789,21 +801,63 @@ def _bench_lines(results, summary) -> list[str]:
     for result in results:
         if result.solved:
             why = result.matched_value
+        elif result.contaminated:
+            why = f"污染：{result.contamination[:50]}"
         elif result.error:
             why = result.error
         else:
             why = "没有提交匹配的 flag" if result.flag_statuses else "没有提交任何 flag"
+        mark = (
+            "√ 解出" if result.solved
+            else ("× 污染" if result.contaminated else "× 未解")
+        )
         lines.append(
-            f"{result.name:<20} {'√ 解出' if result.solved else '× 未解':<6} "
+            f"{result.name:<20} {mark:<6} "
             f"${result.cost_usd:>8.2f} {_duration(result.elapsed_s):>8}  {why[:60]}"
         )
     lines.append(
         f"\n解出 {summary['solved']}/{summary['items']}，总成本 ${summary['cost_usd']:.2f}，"
         f"总用时 {int(summary['elapsed_s']) // 60} 分钟"
     )
+    if summary.get("contaminated"):
+        lines.append(
+            f"（其中 {summary['contaminated']} 个 run 通过宿主/容器层读取目标，判污染、不计解出）"
+        )
     if summary.get("peak_hours"):
         lines.append("（本次跑在网关高峰时段：工作日 09–12 / 14–18 点价格翻倍，"
                      "和别的时段比成本要打折看）")
+    swarm_mode = str((summary.get("config") or {}).get("limits", {}).get("swarm", "off"))
+    if swarm_mode != "off" or summary.get("board"):
+        board = summary.get("board") or {}
+        if board.get("hypotheses"):
+            total = board["hypotheses"]
+            unsolved = board.get("open", 0) + board.get("claimed", 0)
+            latency = []
+            if board.get("claim_latency_s") is not None:
+                latency.append(f"上板→认领 {_duration(board['claim_latency_s'])}")
+            if board.get("settle_latency_s") is not None:
+                latency.append(f"认领→结论 {_duration(board['settle_latency_s'])}")
+            lines.append(
+                f"板子：{total} 条假设，"
+                f"证实 {board.get('supported', 0)} / 证伪 {board.get('refuted', 0)} / "
+                f"回板 {board.get('abandoned', 0)} / 未结算 {unsolved / total:.0%}；"
+                f"同族重叠派工 {board.get('families_with_two_claimants', 0)} 次，"
+                f"绑定工单 {board.get('tasks_bound', 0)} 个"
+                + (f"；中位 {('，'.join(latency))}" if latency else "")
+                + (
+                    f"；收敛到 idle {board['idle_events']} 次"
+                    if board.get("idle_events") is not None
+                    else ""
+                )
+                + (
+                    f"；并发峰值 {board['peak_concurrency']} 个 worker"
+                    if board.get("peak_concurrency")
+                    else ""
+                )
+            )
+        else:
+            lines.append("板子：这个 run 一条假设都没挂（调度模式 "
+                         f"swarm={swarm_mode}）")
     return lines
 
 

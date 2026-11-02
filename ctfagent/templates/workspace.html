@@ -188,6 +188,12 @@
     <div class="side-tabs">
       <button class="tab on" data-stab="tasks">工单 <span class="n">{{ tasks | length }}</span></button>
       <button class="tab" data-stab="flags">Flag <span class="n">{{ flags | length }}</span></button>
+      {% if hypotheses %}
+      {# The board is the one thing board mode changed about who decides. If the
+         operator cannot see it, "the lead stopped dispatching" reads as the lead
+         having nothing to do. #}
+      <button class="tab" data-stab="board">板子 <span class="n">{{ hypotheses | length }}</span></button>
+      {% endif %}
       <button class="tab" data-stab="facts">黑板 <span class="n">{{ facts | length }}</span></button>
       <button class="tab" data-stab="log">日志</button>
     </div>
@@ -234,6 +240,32 @@
           {% include "_flags.html" %}
         </div>
       </section>
+
+      {% if hypotheses %}
+      <section class="spane" data-spane="board" hidden>
+        <div class="tasks">
+          {% for h in hypotheses %}
+          {# Status is the whole story here: open = waiting for a worker,
+             claimed = a worker holds it, supported/refuted = settled. A
+             refute count above zero means the direction was tried and came
+             back disproven — carried forward so a repost cannot look fresh. #}
+          <div class="task t-{{ h.status }}">
+            <div class="head">
+              <span class="role">{{ h.family | role_label }}</span>
+              <span class="stamp st-{{ 'running' if h.status == 'claimed' else ('done' if h.status == 'supported' else ('failed' if h.status == 'refuted' else 'queued')) }}">
+                {{ h.status | hypothesis_status }}
+              </span>
+              {% if h.claimed_by %}<span class="cost">工单#{{ h.claimed_by }}</span>{% endif %}
+              {% if h.refutes %}<span class="cost">证伪 {{ h.refutes }} 次</span>{% endif %}
+            </div>
+            <div class="obj clampable{% if h.statement|length > 180 %} cut{% endif %}">{{ h.statement }}</div>
+            <div class="method">证伪判据：{{ h.criterion }}</div>
+            {% if h.evidence %}<div class="method clampable{% if h.evidence|length > 200 %} cut{% endif %}">触发观测：{{ h.evidence }}</div>{% endif %}
+          </div>
+          {% endfor %}
+        </div>
+      </section>
+      {% endif %}
 
       <section class="spane" data-spane="facts" hidden>
         {% if facts %}

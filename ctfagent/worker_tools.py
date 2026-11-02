@@ -28,6 +28,7 @@ TOOL_NAMES = [
     "request_help",
     "task_complete",
     "read_skill_doc",
+    "post_hypothesis",
 ]
 
 
@@ -219,6 +220,37 @@ def tool_specs() -> list[dict[str, Any]]:
                 "required": ["name"],
             },
         },
+        {
+            "name": "post_hypothesis",
+            "description": (
+                "Write a direction on the board that you are NOT going to chase yourself. Use it "
+                "when your work turns up an angle for another direction (a crypto weakness in a web "
+                "flow, a second binary behind a login) so the observation is not lost when your task "
+                "ends. criterion is what would prove it wrong; it is required. Posting the same idea "
+                "again merges with the existing entry instead of duplicating it."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "family": {
+                        "type": "string",
+                        "enum": [r for r in ROLE_SKILL if r not in ("verifier", "writer")],
+                        "description": "Which direction should pick this up.",
+                    },
+                    "statement": {"type": "string", "description": "The claim, in one sentence."},
+                    "criterion": {
+                        "type": "string",
+                        "description": "What you would have to observe for this to be wrong.",
+                    },
+                    "evidence": {
+                        "type": "string",
+                        "description": "The observation you just made that suggests it.",
+                    },
+                    "priority": {"type": "integer", "default": 0},
+                },
+                "required": ["family", "statement", "criterion", "evidence"],
+            },
+        },
     ]
 
 
@@ -282,6 +314,31 @@ class WorkerTools:
             "inferred",
         )
         return {"unknown_id": fact_id, "note": "主 agent 会看到这条未解问题；解决后用 record_fact(resolves=该 id)。"}
+
+    def post_hypothesis(
+        self,
+        family: str,
+        statement: str,
+        criterion: str,
+        evidence: str,
+        priority: int = 0,
+    ) -> dict[str, Any]:
+        """Put a direction on the board that this worker is not going to chase.
+
+        A worker is usually the one who sees the next angle while doing
+        something else. Writing it down is what lets the lead dispatch it later
+        instead of the observation dying with this task's transcript.
+        """
+        if family not in ROLE_SKILL:
+            return {"error": f"未知方向 {family!r}；选 {[r for r in ROLE_SKILL if r not in ('verifier', 'writer')]}"}
+        return self.run.post_hypothesis(
+            family=family,
+            statement=statement,
+            criterion=criterion,
+            evidence=evidence,
+            origin=f"task#{self.task_id}",
+            priority=priority,
+        )
 
     async def submit_flag(
         self, value: str, method: str, source: str = "", confidence: str = "medium"

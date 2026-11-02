@@ -136,6 +136,13 @@
     "fact.downgraded": "证据不足已降级", "flag.proposed": "提交候选",
     "flag.verdict": "验证结论", "flag.confirmed": "flag 确认",
     "flag.confirm_pending": "等待验证复核", "flag.confirm_refuted": "确认被驳回",
+    "hypothesis.posted": "假设上板", "hypothesis.merged": "假设合并",
+    "hypothesis.claimed": "假设被认领", "hypothesis.released": "假设回板",
+    "hypothesis.supported": "假设证实", "hypothesis.refuted": "假设证伪",
+    "hypothesis.expired": "假设租约过期", "hypothesis.abandoned": "假设被关闭",
+    "board.dispatched": "板子派人", "board.refused": "板子派工被拒",
+    "board.unbound": "工单未绑上假设", "board.error": "协调器出错",
+    "board.idle": "板子空闲",
     "challenge.categorized": "题目分类", "challenge.renamed": "题目更名",
     "chat.user": "对话", "main.message": "主 agent", "main.interrupted": "已打断",
     "agent.event": "代理", "session.error": "会话出错",
@@ -662,12 +669,48 @@
   // live-only (never stored), so they grow a bubble that the finished
   // `main.message` keeps as-is instead of appending a second copy.
 
+  // Rendering is throttled. Re-rendering the whole bubble per token cost O(n²)
+  // string work plus one forced layout per token (`scrollHeight` below), which
+  // is what made a long reply arrive in visible stutters while the model was in
+  // fact streaming at ~200 tok/s. Chunks accumulate here and land on screen at
+  // most once per STREAM_RENDER_MS. The finished message is rendered from the
+  // server's own copy, so the final view is unchanged.
+  var STREAM_RENDER_MS = 66;
+  var streamPending = [];
+  var streamTimer = 0;
+
+  function clearStreamPending() {
+    streamPending.length = 0;
+    if (streamTimer) { clearTimeout(streamTimer); streamTimer = 0; }
+  }
+
+  function flushStream() {
+    streamTimer = 0;
+    var bubble = document.getElementById("stream-bubble");
+    var body = document.getElementById("stream-body");
+    if (!bubble || !body || bubble.hidden) { streamPending.length = 0; return; }
+    if (!streamPending.length) return;
+    // The raw text is kept on the element and re-rendered, so a code fence
+    // that is still half-open does not flash raw asterisks and backticks.
+    var raw = (body.getAttribute("data-raw") || "") + streamPending.join("");
+    streamPending.length = 0;
+    body.setAttribute("data-raw", raw);
+    var box = messagesBox();
+    // Only follow the tail when the operator is already at the bottom; yanking
+    // the view while they read scrollback is the classic chat annoyance. Read
+    // before the write so the check does not add a layout of its own.
+    var pinned = !box || box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+    body.innerHTML = renderMarkdown(raw);
+    if (pinned && box) box.scrollTop = box.scrollHeight;
+  }
+
   function streamBubble() {
     var bubble = document.getElementById("stream-bubble");
     var body = document.getElementById("stream-body");
     if (!bubble || !body) return null;
     if (bubble.hidden) {
       bubble.hidden = false;
+      clearStreamPending();
       body.textContent = "";
       body.removeAttribute("data-raw");
       var empty = document.getElementById("chat-empty");
@@ -681,15 +724,9 @@
   function appendDelta(text) {
     var body = streamBubble();
     if (!body || !text) return;
-    var box = messagesBox();
-    // Only follow the tail when the operator is already at the bottom; yanking
-    // the view while they read scrollback is the classic chat annoyance.
-    var pinned = !box || box.scrollHeight - box.scrollTop - box.clientHeight < 60;
-    // The raw text is kept on the element and re-rendered, so a code fence
-    // that is still half-open does not flash raw asterisks and backticks.
-    body.setAttribute("data-raw", (body.getAttribute("data-raw") || "") + text);
-    body.innerHTML = renderMarkdown(body.getAttribute("data-raw"));
-    if (pinned && box) box.scrollTop = box.scrollHeight;
+    streamPending.push(text);
+    if (streamTimer) return;
+    streamTimer = setTimeout(flushStream, STREAM_RENDER_MS);
   }
   function finishStream(text) {
     // The partial bubble is a scratch surface, not a message: the durable
@@ -698,6 +735,7 @@
     // stored text are the same string).
     var bubble = document.getElementById("stream-bubble");
     var body = document.getElementById("stream-body");
+    clearStreamPending();
     if (bubble) bubble.hidden = true;
     if (body) {
       body.textContent = "";
@@ -710,6 +748,7 @@
     var bubble = document.getElementById("stream-bubble");
     var body = document.getElementById("stream-body");
     if (!bubble || !body) return;
+    clearStreamPending();
     bubble.hidden = true;
     body.textContent = "";
   }
@@ -1593,6 +1632,10 @@
     "task.dispatched", "task.started", "task.finished", "task.result",
     "fact.added", "fact.merged", "fact.downgraded",
     "flag.proposed", "flag.verdict", "flag.confirmed",
+    "hypothesis.posted", "hypothesis.merged", "hypothesis.claimed",
+    "hypothesis.released", "hypothesis.supported", "hypothesis.refuted",
+    "hypothesis.expired", "hypothesis.abandoned", "board.dispatched", "board.refused", "board.error",
+    "board.idle",
     "chat.user", "main.message", "main.interrupted", "text_delta", "thinking_delta",
     "agent.event", "session.error"
   ];
@@ -1604,6 +1647,12 @@
   var RERENDER = {
     "task.dispatched": 1, "task.finished": 1, "task.result": 1,
     "flag.proposed": 1, "flag.verdict": 1, "flag.confirmed": 1,
+    // The board pane is server-rendered state like the task list. A claimed
+    // direction that never re-renders reads as "nobody is working on it" for
+    // the whole session — exactly the confusion the pane exists to prevent.
+    "hypothesis.posted": 1, "hypothesis.claimed": 1, "hypothesis.released": 1,
+    "hypothesis.supported": 1, "hypothesis.refuted": 1, "hypothesis.expired": 1,
+    "hypothesis.abandoned": 1,
     "run.finished": 1, "run.needs_input": 1, "run.question": 1,
     "run.writer_dispatched": 1, "run.writeup": 1, "run.error": 1,
     "run.attachments": 1

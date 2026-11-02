@@ -9,6 +9,8 @@ below pins one of them.
 from __future__ import annotations
 
 import json
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -634,3 +636,383 @@ def test_a_report_records_the_assignment_that_produced_it(cfg) -> None:
                               "elapsed_s": 0, "config": fingerprint})
     assert "worker=m-one" in lines[0]
     assert "reverse=m-two" in lines[0]
+
+
+def test_host_layer_access_is_contamination_not_a_solve() -> None:
+    """ezcms 2026-10-31: a misc worker ran ``docker exec ezcms-lab cat /flag``.
+
+    The web workers had found the E-string injection and the admin hashes, but
+    the value came from the host's Docker daemon. Counting that as solved
+    measures the machine's permissions, not the platform's skill — and sealing
+    files does not seal the socket.
+    """
+    assert bench.contamination_signal(["docker exec ezcms-lab cat /flag"])
+    assert bench.contamination_signal(["docker cp ezcms-lab:/flag ."])
+    assert bench.contamination_signal(["docker inspect ezcms-lab"])
+    assert bench.contamination_signal(["podman exec x cat /flag"])
+    assert bench.contamination_signal(["kubectl exec pod -- cat /flag"])
+    assert bench.contamination_signal(["curl http://127.0.0.1:18080/search?q=x"]) == ""
+    # The rule text itself must not match, or every benchmark run is flagged.
+    assert bench.contamination_signal([bench._BENCH_RULE]) == ""
+
+    result = bench.BenchResult(
+        name="ezcms",
+        category="web",
+        run_id=1,
+        status="failed",
+        solved=False,
+        hit=True,
+        verified_hit=False,
+        matched_value="flag{x}",
+        expected="flag{x}",
+        cost_usd=0.1,
+        elapsed_s=1.0,
+        tasks=1,
+        contaminated=True,
+        contamination="docker exec ezcms-lab cat /flag",
+    )
+    summary = bench.summarise([result])
+    assert summary["solved"] == 0
+    assert summary["contaminated"] == 1
+
+
+def test_the_table_marks_a_contaminated_run(cfg) -> None:
+    """The number that matters is visible in the table, not only in the JSON."""
+    from ctfagent.cli import _bench_lines
+
+    result = bench.BenchResult(
+        name="ezcms",
+        category="web",
+        run_id=1,
+        status="failed",
+        solved=False,
+        hit=True,
+        verified_hit=False,
+        matched_value="flag{x}",
+        expected="flag{x}",
+        cost_usd=0.1,
+        elapsed_s=1.0,
+        tasks=1,
+        contaminated=True,
+        contamination="docker exec ezcms-lab cat /flag",
+    )
+    lines = _bench_lines(
+        [result],
+        {"solved": 0, "items": 1, "contaminated": 1, "cost_usd": 0.1,
+         "elapsed_s": 1, "config": {}},
+    )
+    text = "\n".join(lines)
+    assert "污染" in text
+    assert "不计解出" in text
+
+
+async def test_a_bench_report_carries_the_board_numbers(tmp_path: Path, fixtures_dir: Path, cfg) -> None:
+    """§8 of the design doc: board mode cannot be judged without its numbers.
+
+    The metrics are read from the benchmark's own database and must reach both
+    the JSON summary and the operator's table — a number that only exists in a
+    discarded temp file is not a measurement. Hypotheses are posted from the
+    ``on_run`` seam, which is what the lead does in board mode; the run itself
+    is left in the default (star) shape so the test does not depend on the
+    coordinator's timing.
+    """
+    from ctfagent import swarm
+    from ctfagent.backend import ScriptedBackend
+    from ctfagent.cli import _bench_lines
+
+    directory = tmp_path / "bench"
+    directory.mkdir(parents=True)
+    (directory / "bench.yaml").write_text(
+        "items:\n"
+        "  - name: good\n"
+        f"    directory: {fixtures_dir / 'easy_crypto'}\n"
+        "    expect: flag{right}\n",
+        encoding="utf-8",
+    )
+
+    async def play(run) -> None:
+        run.post_hypothesis(
+            family="crypto", statement="模数可分解",
+            criterion="枚举 10^6 内无因子", evidence="p、q 相差很小",
+        )
+        await run.propose_flag("flag{right}", "scripted:", "out.bin", "high")
+        run.request_finish("failed", "scripted lead is done")
+
+    _, summary = await bench.run_benchmark(
+        bench.load_manifest(directory), cfg, poll_s=0.05, on_run=play,
+        backend=ScriptedBackend(),
+    )
+
+    board = summary["board"]
+    assert board["hypotheses"] == 1
+    assert board["tasks_bound"] == 0
+    assert "families_with_two_claimants" in board
+    text = "\n".join(_bench_lines([], {"solved": 0, "items": 1, "cost_usd": 0,
+                                       "elapsed_s": 1, "config": {}, "board": board}))
+    assert "板子：" in text and "1 条假设" in text
+    # Latency is shown when the board recorded it, and omitted (not "0分00秒")
+    # when the run never reached the stage.
+    summary["board"]["claim_latency_s"] = 7.0
+    summary["board"]["idle_events"] = 0
+    text = "\n".join(_bench_lines([], {"solved": 0, "items": 1, "cost_usd": 0,
+                                       "elapsed_s": 1, "config": {}, "board": summary["board"]}))
+    assert "上板→认领 0分07秒" in text and "认领→结论" not in text
+    # Zero is a measurement (the board never converged), so it is printed;
+    # ``None`` means the database predates the event and must stay silent.
+    assert "收敛到 idle 0 次" in text
+    summary["board"]["idle_events"] = None
+    text = "\n".join(_bench_lines([], {"solved": 0, "items": 1, "cost_usd": 0,
+                                       "elapsed_s": 1, "config": {}, "board": summary["board"]}))
+    assert "收敛到 idle" not in text
+    # Peak concurrency is printed when the database has task rows; a bench with
+    # no tasks says nothing rather than "0 个".
+    summary["board"]["peak_concurrency"] = 3
+    text = "\n".join(_bench_lines([], {"solved": 0, "items": 1, "cost_usd": 0,
+                                       "elapsed_s": 1, "config": {}, "board": summary["board"]}))
+    assert "并发峰值 3 个 worker" in text
+    text.encode("cp936")
+
+
+def test_board_metrics_count_overlap_not_retries(tmp_path: Path) -> None:
+    """The duplicate-dispatch number must not fire on a legitimate retry.
+
+    A direction whose first worker hit its ceiling is claimed again by the next
+    one — that is the board working, and counting claimants per family would
+    report it as the rule being broken. What the rule forbids is two sessions of
+    one family *alive at once*, so the metric reads the task clock.
+    """
+    from ctfagent.db import Store
+
+    db = tmp_path / "board.db"
+    store = Store(db)
+    try:
+        challenge_id = store.add_challenge(load_challenge(Path("tests/fixtures/easy_crypto")))
+        run_id = store.create_run(challenge_id, "solve").id
+        from ctfagent import swarm
+
+        # Two retries of one direction, back to back: no overlap.
+        row, _ = store.add_hypothesis(
+            run_id,
+            swarm.Hypothesis(
+                family="crypto", statement="模数可分解",
+                criterion="枚举 10^6 内无因子", evidence="p、q 相差很小",
+            ),
+        )
+        first = store.create_task(run_id, "crypto", "obj1", "", row.id)
+        second = store.create_task(run_id, "crypto", "obj2", "", row.id)
+        store.mark_task_started(first.id)
+        store.finish_task(first.id, "exhausted", {}, "")
+        store.mark_task_started(second.id)
+        store.finish_task(second.id, "done", {}, "")
+        # A second family, one worker.
+        web = store.create_task(run_id, "web", "obj3", "", 2)
+        store.mark_task_started(web.id)
+        store.finish_task(web.id, "done", {}, "")
+    finally:
+        store.close()
+
+    metrics = bench.swarm_metrics(db)
+    assert metrics["tasks_bound"] == 3
+    assert metrics["families_with_two_claimants"] == 0
+
+
+def test_board_metrics_count_peak_concurrency_not_session_count(tmp_path: Path) -> None:
+    """The number that decides whether raising a bound is worth anything.
+
+    Three workers that never ran together is a peak of 1, not 3. A verifier
+    alive while two directions run is a peak of 2, not 3: it is not a second
+    direction and the coordinator's bound does not count it.
+    """
+    import sqlite3
+
+    from ctfagent.db import Store
+
+    db = tmp_path / "peak.db"
+    store = Store(db)
+    try:
+        challenge_id = store.add_challenge(load_challenge(Path("tests/fixtures/easy_crypto")))
+        run_id = store.create_run(challenge_id, "solve").id
+        a = store.create_task(run_id, "web", "1", "", None)
+        b = store.create_task(run_id, "crypto", "2", "", None)
+        v = store.create_task(run_id, "verifier", "3", "", None)
+        c = store.create_task(run_id, "reverse", "4", "", None)
+    finally:
+        store.close()
+    conn = sqlite3.connect(db)
+    spans = {
+        a.id: ("2026-11-01 10:00:00", "2026-11-01 10:10:00"),
+        b.id: ("2026-11-01 10:11:00", "2026-11-01 10:20:00"),  # after a
+        v.id: ("2026-11-01 10:11:00", "2026-11-01 10:15:00"),  # overlaps b
+        c.id: ("2026-11-01 10:15:00", "2026-11-01 10:30:00"),  # verifier gone
+    }
+    for task_id, (start, end) in spans.items():
+        conn.execute(
+            "UPDATE tasks SET started_at=?, finished_at=? WHERE id=?", (start, end, task_id)
+        )
+    conn.commit()
+    conn.close()
+
+    metrics = bench.swarm_metrics(db)
+    # b and c do overlap (10:11-10:20 vs 10:15-10:30) while the verifier never
+    # counts, so the peak is two directions even though four sessions existed.
+    assert metrics["peak_concurrency"] == 2
+
+
+def test_board_metrics_report_a_real_overlap(tmp_path: Path) -> None:
+    """The other side of the number: two sessions of one family at once is a
+    defect, and the report has to be able to see it — otherwise the zero above
+    proves nothing."""
+    import sqlite3
+
+    from ctfagent.db import Store
+
+    db = tmp_path / "overlap.db"
+    store = Store(db)
+    try:
+        challenge_id = store.add_challenge(load_challenge(Path("tests/fixtures/easy_crypto")))
+        run_id = store.create_run(challenge_id, "solve").id
+        from ctfagent import swarm
+
+        row, _ = store.add_hypothesis(
+            run_id,
+            swarm.Hypothesis(
+                family="crypto", statement="模数可分解",
+                criterion="枚举 10^6 内无因子", evidence="p、q 相差很小",
+            ),
+        )
+        a = store.create_task(run_id, "crypto", "obj1", "", row.id)
+        b = store.create_task(run_id, "crypto", "obj2", "", row.id)
+    finally:
+        store.close()
+
+    conn = sqlite3.connect(db)
+    conn.execute("UPDATE tasks SET started_at='2026-11-01 10:00:00', finished_at='2026-11-01 10:10:00' WHERE id=?", (a.id,))
+    conn.execute("UPDATE tasks SET started_at='2026-11-01 10:05:00', finished_at='2026-11-01 10:20:00' WHERE id=?", (b.id,))
+    conn.commit()
+    conn.close()
+
+    assert bench.swarm_metrics(db)["families_with_two_claimants"] == 1
+
+
+def test_board_latency_metrics_pair_first_events_and_say_nothing_when_missing(
+    tmp_path: Path,
+) -> None:
+    """§8 survival-time: posted → claimed, claimed → settled.
+
+    Two failure modes are pinned. Pairing *every* dispatch with the next settle
+    event pairs one worker's start with another worker's finish and reports a
+    latency nobody experienced; and a run that never settled must be ``None``
+    rather than 0, or "never finished" reads as "finished instantly".
+    """
+    import sqlite3
+
+    from ctfagent.db import Store
+
+    db = tmp_path / "latency.db"
+    store = Store(db)
+    try:
+        challenge_id = store.add_challenge(load_challenge(Path("tests/fixtures/easy_crypto")))
+        run_id = store.create_run(challenge_id, "solve").id
+        from ctfagent import swarm
+
+        store.add_hypothesis(
+            run_id,
+            swarm.Hypothesis(
+                family="crypto", statement="模数可分解",
+                criterion="枚举 10^6 内无因子", evidence="p、q 相差很小",
+            ),
+        )
+    finally:
+        store.close()
+
+    conn = sqlite3.connect(db)
+    # Times are backdated by hand: the events table stamps ``now``.
+    stamps = {
+        "hypothesis.posted": "2026-11-02 10:00:00",
+        "board.dispatched": "2026-11-02 10:00:07",
+        # A second dispatch, two minutes later, that must not be paired with
+        # the first settle.
+        "hypothesis.supported": "2026-11-02 10:01:30",
+    }
+    for kind, stamp in stamps.items():
+        cur = conn.execute(
+            "INSERT INTO events (run_id, kind, payload, created_at) VALUES (?,?,?,?)",
+            (run_id, kind, "{}", stamp),
+        )
+    conn.execute(
+        "INSERT INTO events (run_id, kind, payload, created_at) VALUES (?,?,?,?)",
+        (run_id, "board.dispatched", "{}", "2026-11-02 10:02:00"),
+    )
+    conn.commit()
+    conn.close()
+
+    metrics = bench.swarm_metrics(db)
+    assert metrics["claim_latency_s"] == 7.0
+    assert metrics["settle_latency_s"] == 83.0  # 10:00:07 -> 10:01:30
+
+    # A run whose board never settled has no latency to report.
+    db2 = tmp_path / "unsettled.db"
+    store = Store(db2)
+    try:
+        challenge_id = store.add_challenge(load_challenge(Path("tests/fixtures/easy_crypto")))
+        run2 = store.create_run(challenge_id, "solve").id
+        store.add_hypothesis(
+            run2,
+            swarm.Hypothesis(
+                family="crypto", statement="模数可分解",
+                criterion="枚举 10^6 内无因子", evidence="p、q 相差很小",
+            ),
+        )
+    finally:
+        store.close()
+    conn2 = sqlite3.connect(db2)
+    conn2.execute(
+        "INSERT INTO events (run_id, kind, payload, created_at) VALUES (?,?,?,?)",
+        (run2, "hypothesis.posted", "{}", "2026-11-02 10:00:00"),
+    )
+    conn2.commit()
+    conn2.close()
+    metrics2 = bench.swarm_metrics(db2)
+    assert metrics2["claim_latency_s"] is None
+    assert metrics2["settle_latency_s"] is None
+    # This database has board events but no ``board.idle``: zero convergences is
+    # the measurement, not "unmeasured".
+    assert metrics2["idle_events"] == 0
+
+
+def test_rmtree_force_removes_read_only_git_objects(tmp_path: Path) -> None:
+    """``shutil.rmtree(ignore_errors=True)`` cannot delete read-only files, so a
+    workdir with a ``.git`` leaks on Windows. The helper clears the read-only
+    bit and retries, and the directory actually goes away."""
+    work = tmp_path / "ctfagent-bench-leaky"
+    git = work / "workspaces" / "run-1" / "easy" / "work" / ".git" / "objects"
+    git.mkdir(parents=True)
+    (git / "readonly.bin").write_bytes(b"\x00" * 8)
+    # Read-only, exactly like the real .git objects on Windows.
+    os.chmod(git / "readonly.bin", stat.S_IREAD)
+
+    bench._rmtree_force(work)
+    assert not work.exists()
+
+
+def test_sweep_stale_bench_dirs_removes_only_old_leftovers(tmp_path: Path, monkeypatch) -> None:
+    import time as _time
+    root = tmp_path
+    old = root / "ctfagent-bench-old"
+    fresh = root / "ctfagent-bench-fresh"
+    keep = root / "not-a-bench-dir"
+    for d in (old, fresh, keep):
+        (d / "workspaces").mkdir(parents=True)
+
+    monkeypatch.setattr("ctfagent.bench._rmtree_force", lambda p: None)  # just count
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(root))
+    now = 100000.0
+    old.touch()  # mtime = now-ish via touch default; we pass explicit now
+
+    # Make `old` look old, `fresh` look fresh.
+    os.utime(old, (now - 7 * 3600, now - 7 * 3600))
+    os.utime(fresh, (now - 60, now - 60))
+
+    removed = bench._sweep_stale_bench_dirs(now)
+    # old was swept, fresh was not, non-bench dir ignored.
+    assert removed == 1

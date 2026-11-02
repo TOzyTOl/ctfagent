@@ -17,6 +17,7 @@ import threading
 from pathlib import Path
 from typing import Any, Iterable
 
+from . import swarm
 from .models import (
     Case,
     Challenge,
@@ -98,7 +99,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     cost_usd    REAL NOT NULL DEFAULT 0,
     turns       INTEGER NOT NULL DEFAULT 0,
     result      TEXT NOT NULL DEFAULT '{}',
-    error       TEXT NOT NULL DEFAULT ''
+    error       TEXT NOT NULL DEFAULT '',
+    hypothesis_id INTEGER
 );
 CREATE INDEX IF NOT EXISTS tasks_run ON tasks(run_id, status);
 
@@ -240,6 +242,28 @@ CREATE TABLE IF NOT EXISTS app_settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL DEFAULT ''
 );
+
+-- A hypothesis is work not yet done, distinct from `tasks` (work in flight or
+-- already finished) and `facts` (what a finished task taught the run). Claiming
+-- is by lease, so a session that dies mid-task cannot hold a direction forever.
+CREATE TABLE IF NOT EXISTS hypotheses (
+    id           INTEGER PRIMARY KEY,
+    run_id       INTEGER NOT NULL,
+    family       TEXT NOT NULL,
+    statement    TEXT NOT NULL,
+    criterion    TEXT NOT NULL,
+    evidence     TEXT NOT NULL,
+    origin       TEXT NOT NULL DEFAULT 'lead',
+    basis        TEXT NOT NULL DEFAULT 'inferred',
+    priority     INTEGER NOT NULL DEFAULT 0,
+    status       TEXT NOT NULL DEFAULT 'open',
+    claimed_by   INTEGER,
+    lease_until  REAL NOT NULL DEFAULT 0,
+    supports     INTEGER NOT NULL DEFAULT 0,
+    refutes      INTEGER NOT NULL DEFAULT 0,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS hypotheses_run ON hypotheses(run_id, status);
 """
 
 TERMINAL_RUN_STATES = ("solved", "failed", "stopped")
@@ -282,6 +306,13 @@ class Store:
             self._conn.execute(
                 "ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'"
             )
+
+        # A task can carry the board entry it is executing (黑板市场). Additive:
+        # existing rows stay NULL and keep reading as the centrally dispatched
+        # shape, so the two modes coexist on one database.
+        have = {row["name"] for row in self._conn.execute("PRAGMA table_info(tasks)")}
+        if "hypothesis_id" not in have:
+            self._conn.execute("ALTER TABLE tasks ADD COLUMN hypothesis_id INTEGER")
 
         # Facts gained a grounding level and a "this closes unknown #N" pointer.
         have = {row["name"] for row in self._conn.execute("PRAGMA table_info(facts)")}
@@ -731,6 +762,221 @@ class Store:
             (session_id, cost_usd, run_id),
         )
 
+    # ---- hypotheses (黑板市场：还没做的事) ---------------------------------
+
+    @staticmethod
+    def _hypothesis(row: sqlite3.Row) -> swarm.Hypothesis:
+        return swarm.Hypothesis(
+            id=int(row["id"]),
+            run_id=int(row["run_id"]),
+            family=str(row["family"]),
+            statement=str(row["statement"]),
+            criterion=str(row["criterion"]),
+            evidence=str(row["evidence"]),
+            origin=str(row["origin"]),
+            basis=str(row["basis"]),
+            priority=int(row["priority"]),
+            status=str(row["status"]),
+            claimed_by=row["claimed_by"],
+            lease_until=float(row["lease_until"] or 0.0),
+            supports=int(row["supports"]),
+            refutes=int(row["refutes"]),
+        )
+
+    def list_hypotheses(self, run_id: int, status: str | None = None) -> list[swarm.Hypothesis]:
+        if status is None:
+            rows = self._rows(
+                "SELECT * FROM hypotheses WHERE run_id=? ORDER BY priority DESC, id ASC",
+                (run_id,),
+            )
+        else:
+            rows = self._rows(
+                "SELECT * FROM hypotheses WHERE run_id=? AND status=? "
+                "ORDER BY priority DESC, id ASC",
+                (run_id, status),
+            )
+        return [self._hypothesis(r) for r in rows]
+
+    def get_hypothesis(self, hypothesis_id: int) -> swarm.Hypothesis | None:
+        row = self._row("SELECT * FROM hypotheses WHERE id=?", (hypothesis_id,))
+        return self._hypothesis(row) if row else None
+
+    def hypothesis_ages(self, run_id: int) -> dict[int, float]:
+        """Seconds since each entry was posted, keyed by hypothesis id.
+
+        Read as its own query rather than as a field on ``Hypothesis``: the
+        dataclass is the *protocol* (what a direction is, what makes it
+        falsifiable) and has to stay importable without a database, while age is
+        a fact about a row — and one that only the clock can change, which is
+        not something a frozen value should pretend to be.
+
+        ``created_at`` is written by SQLite's ``datetime('now')``, i.e. UTC. A
+        row whose timestamp cannot be read is left out rather than reported as
+        zero: the caller treats a missing age as "not measured", so a corrupt
+        row can never turn into "waiting 0 s, nothing to see" or "waiting
+        forever, patrol now".
+        """
+        from datetime import datetime, timezone
+
+        rows = self._rows(
+            "SELECT id, created_at FROM hypotheses WHERE run_id=?", (run_id,)
+        )
+        now = datetime.now(timezone.utc)
+        ages: dict[int, float] = {}
+        for row in rows:
+            try:
+                posted = datetime.strptime(str(row["created_at"]), "%Y-%m-%d %H:%M:%S")
+            except (TypeError, ValueError):
+                continue
+            ages[int(row["id"])] = (now - posted.replace(tzinfo=timezone.utc)).total_seconds()
+        return ages
+
+    def add_hypothesis(self, run_id: int, h: swarm.Hypothesis) -> tuple[swarm.Hypothesis, bool]:
+        """Post a hypothesis; merge into an existing one with the same key.
+
+        Returns ``(row, created)``. Merging keeps the refute count, so a
+        direction that already failed twice cannot be reposted as if it were
+        new — that is the whole point of doing dedupe at the write path.
+        """
+        swarm.post(h)  # hard validation: family / criterion / evidence
+        for other in self.list_hypotheses(run_id):
+            if other.key != h.key:
+                continue
+            swarm.dedupe([other, h])
+            self._exec(
+                "UPDATE hypotheses SET evidence=?, priority=?, supports=?, refutes=? "
+                "WHERE id=?",
+                (other.evidence, other.priority, other.supports, other.refutes, other.id),
+            )
+            return other, False
+        cur = self._exec(
+            "INSERT INTO hypotheses "
+            "(run_id, family, statement, criterion, evidence, origin, basis, priority) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (run_id, h.family, h.statement, h.criterion, h.evidence, h.origin, h.basis,
+             h.priority),
+        )
+        row = self.get_hypothesis(int(cur.lastrowid))
+        assert row is not None
+        return row, True
+
+    def set_hypothesis_status(
+        self, hypothesis_id: int, status: str, *, clear_claim: bool = False
+    ) -> None:
+        """Move a board entry. ``clear_claim`` also drops the lease owner.
+
+        Releasing is the case that needs the second half: an entry put back to
+        ``open`` with ``claimed_by`` still pointing at the task that just died
+        reads as open to the board but leaves a stale owner in every rendering,
+        and any later check that trusts the owner column sees a live claim that
+        no longer exists.
+        """
+        if clear_claim:
+            self._exec(
+                "UPDATE hypotheses SET status=?, claimed_by=NULL, lease_until=0 WHERE id=?",
+                (status, hypothesis_id),
+            )
+        else:
+            self._exec("UPDATE hypotheses SET status=? WHERE id=?", (status, hypothesis_id))
+
+    def set_task_hypothesis(self, task_id: int, hypothesis_id: int) -> None:
+        """Point an existing task at a board entry (the coordinator's path).
+
+        ``dispatch(hypothesis_id=)`` writes this at INSERT time; the board
+        coordinator claims first, dispatches second, so the pointing happens
+        after the row exists. Both land in the same column, and that column is
+        what timeout cleanup and settlement read to find the entry again.
+        """
+        self._exec(
+            "UPDATE tasks SET hypothesis_id=? WHERE id=?", (hypothesis_id, task_id)
+        )
+
+    def claim_hypothesis(
+        self,
+        run_id: int,
+        *,
+        role: str,
+        task_id: int,
+        now: float,
+        ttl_s: float = swarm.DEFAULT_TTL_S,
+        families: dict[str, str] | None = None,
+    ) -> swarm.Hypothesis | None:
+        """Lease the best open hypothesis to ``task_id``.
+
+        The choice is made in Python (``swarm.claim`` scores it), the write is
+        guarded by ``status='open'`` in the WHERE clause: if another session
+        claimed it in between, the rowcount is zero and this call returns None
+        instead of silently double-booking.
+        """
+        chosen = swarm.claim(
+            self.list_hypotheses(run_id, status=swarm.OPEN),
+            role=role,
+            task_id=task_id,
+            now=now,
+            ttl_s=ttl_s,
+            families=families,
+        )
+        if chosen is None or chosen.id == 0:
+            return None
+        cur = self._exec(
+            "UPDATE hypotheses SET status=?, claimed_by=?, lease_until=? "
+            "WHERE id=? AND status=?",
+            (swarm.CLAIMED, task_id, chosen.lease_until, chosen.id, swarm.OPEN),
+        )
+        if cur.rowcount != 1:
+            return None
+        return self.get_hypothesis(chosen.id)
+
+    def lease_hypothesis(
+        self,
+        hypothesis_id: int,
+        task_id: int,
+        now: float,
+        ttl_s: float = swarm.DEFAULT_TTL_S,
+    ) -> bool:
+        """Lease a specific hypothesis to a task (the lead chose it, not the board).
+
+        Idempotent for the same task so a resumed task can re-bind its own entry.
+        A negative ``claimed_by`` is the board coordinator's placeholder (claimed
+        before the task row existed) and may be taken over by the real task id;
+        a positive one is another worker and may not.
+        """
+        cur = self._exec(
+            "UPDATE hypotheses SET status=?, claimed_by=?, lease_until=? "
+            "WHERE id=? AND (status=? OR claimed_by=? OR claimed_by<0)",
+            (swarm.CLAIMED, task_id, now + ttl_s, hypothesis_id, swarm.OPEN, task_id),
+        )
+        return cur.rowcount == 1
+
+    def renew_hypothesis(
+        self, hypothesis_id: int, now: float, ttl_s: float = swarm.DEFAULT_TTL_S
+    ) -> None:
+        self._exec(
+            "UPDATE hypotheses SET lease_until=? WHERE id=? AND status=?",
+            (now + ttl_s, hypothesis_id, swarm.CLAIMED),
+        )
+
+    def expire_hypotheses(self, now: float) -> list[int]:
+        """Release leases that lapsed. Returns the ids put back on the board."""
+        rows = self._rows(
+            "SELECT id FROM hypotheses WHERE status=? AND lease_until>0 AND lease_until<?",
+            (swarm.CLAIMED, now),
+        )
+        freed = [int(r["id"]) for r in rows]
+        for hypothesis_id in freed:
+            self._exec(
+                "UPDATE hypotheses SET status=?, claimed_by=NULL, lease_until=0 "
+                "WHERE id=? AND status=?",
+                (swarm.OPEN, hypothesis_id, swarm.CLAIMED),
+            )
+        return freed
+
+    def bump_hypothesis(self, hypothesis_id: int, *, supports: int = 0, refutes: int = 0) -> None:
+        self._exec(
+            "UPDATE hypotheses SET supports=supports+?, refutes=refutes+? WHERE id=?",
+            (supports, refutes, hypothesis_id),
+        )
+
     def fail_unfinished_runs(self, reason: str = "服务重启") -> int:
         cur = self._exec(
             """UPDATE runs SET status='interrupted', finished_at=datetime('now'), stop_reason=?
@@ -854,10 +1100,18 @@ class Store:
         return groups
 
     # -------------------------------------------------------------------- tasks
-    def create_task(self, run_id: int, role: str, objective: str, context: str) -> Task:
+    def create_task(
+        self,
+        run_id: int,
+        role: str,
+        objective: str,
+        context: str,
+        hypothesis_id: int | None = None,
+    ) -> Task:
         cur = self._exec(
-            "INSERT INTO tasks (run_id, role, objective, context) VALUES (?,?,?,?)",
-            (run_id, role, objective, context),
+            "INSERT INTO tasks (run_id, role, objective, context, hypothesis_id) "
+            "VALUES (?,?,?,?,?)",
+            (run_id, role, objective, context, hypothesis_id),
         )
         task = self.get_task(int(cur.lastrowid))
         assert task is not None
@@ -932,6 +1186,7 @@ class Store:
             turns=row["turns"],
             result=loads(row["result"], {}),
             error=row["error"],
+            hypothesis_id=row["hypothesis_id"] if "hypothesis_id" in row.keys() else None,
         )
 
     # -------------------------------------------------------------------- facts
@@ -999,6 +1254,44 @@ class Store:
             "UPDATE flags SET status=?, note=CASE WHEN ?<>'' THEN ? ELSE note END WHERE id=?",
             (status, note, note, flag_id),
         )
+
+    def task_seconds(self, run_id: int) -> tuple[float, int, int]:
+        """Worker-seconds, task count, and peak concurrency for one run.
+
+        Wall-clock parallelism is ``worker_seconds / run_duration``: 1.0 means
+        the run never overlapped anything. Run 18 was measured at 0.94 by hand
+        after five workers that could have overlapped ran almost as one line.
+        Computing it is the only way to know whether the lead's own instruction
+        to fan out actually took effect.
+        """
+        from datetime import datetime  # noqa: PLC0415 - only needed here
+
+        rows = self._rows(
+            "SELECT started_at, finished_at FROM tasks "
+            "WHERE run_id=? AND started_at IS NOT NULL AND finished_at IS NOT NULL "
+            "AND finished_at != ''",
+            (run_id,),
+        )
+        total = 0.0
+        spans: list[tuple[float, float]] = []
+        for row in rows:
+            try:
+                start = datetime.fromisoformat(str(row["started_at"])).timestamp()
+                end = datetime.fromisoformat(str(row["finished_at"])).timestamp()
+            except ValueError:
+                continue
+            if end < start:
+                continue
+            total += end - start
+            spans.append((start, end))
+        # Interval sweep: +1 on entry, -1 on exit, ordered so an exit at the
+        # same second does not count as overlap with the next task's entry.
+        edges = sorted([(s, 1) for s, _ in spans] + [(e, -1) for _, e in spans])
+        peak = live = 0
+        for _, delta in edges:
+            live += delta
+            peak = max(peak, live)
+        return total, len(spans), peak
 
     def usage_by_task(self, run_id: int | None = None) -> list[dict[str, Any]]:
         """Peak token usage per session, with the role and run it belonged to.

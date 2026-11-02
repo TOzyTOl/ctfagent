@@ -1535,3 +1535,45 @@ def test_wsl_sandbox_mode_spawns_through_the_forwarder(
     run.cfg.sandbox.mode = "none"
     options = backend._options(run._main_spec())
     assert "CTFAGENT_SANDBOX_DISTRO" not in options.env
+
+
+class _FlakySpawnBackend:
+    """First spawn fails like a locked CLI file; the second one works."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def run(self, spec):
+        self.calls += 1
+        if self.calls == 1:
+            yield AgentEvent(
+                "error",
+                {"error": "CLINotFoundError: Claude Code not found at: C:/x/claude.exe"},
+            )
+            return
+        yield AgentEvent(
+            "result",
+            {"subtype": "success", "is_error": False, "result": "ok", "session_id": "s1"},
+        )
+
+
+async def test_a_transiently_missing_cli_is_retried_not_failed(
+    cfg, fixtures_dir: Path, store_and_bus
+) -> None:
+    """Measured 2026-10-31: two pwn sessions died on "CLI not found" at 05:54 and
+    05:57 while a probe worker at 05:59 came up normally — a file lock, not a
+    broken install. A retry turns that into a two-second delay.
+    """
+    store, bus = store_and_bus
+    backend = _FlakySpawnBackend()
+    run = _manager(store, bus, cfg, backend).prepare(
+        store.add_challenge(load_challenge(fixtures_dir / "easy_rev"))
+    )
+    task = await run.dispatch("reverse", "x", "")
+    for _ in range(400):
+        if store.get_task(task.id).terminal:
+            break
+        await asyncio.sleep(0.02)
+    finished = store.get_task(task.id)
+    assert finished.status == TaskStatus.DONE
+    assert backend.calls == 2

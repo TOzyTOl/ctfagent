@@ -34,6 +34,13 @@ Python jail/sandbox escape techniques (AST bypass, audit hook bypass, MRO-based 
 3. Use `name` overflow to rewrite exec object's pointer with `win() ^ KEY`
 4. `execute(obj)` decodes and calls the patched function pointer
 
+**Tagged-value VMs with moving GC:** If object pointers encode the type in the low bits
+(`(off<<4)|kind<<1|1`) and GC compacts the heap, check whether compaction only rewrites
+elements of container kinds. Turning a container into a leaf kind via a 1-byte OOB leaves
+stale pointers → type confusion → forged tag object → arbitrary read/write. Full method,
+including native function table overwrite and stack pivot, in
+[vm-bytecode-gc.md](vm-bytecode-gc.md).
+
 ## FUSE/CUSE Character Device Exploitation
 
 **FUSE** (Filesystem in Userspace) / **CUSE** (Character device in Userspace)

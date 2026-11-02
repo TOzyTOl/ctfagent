@@ -35,6 +35,7 @@ TOOL_NAMES = [
     "propose_flag",
     "ask_user",
     "finish_run",
+    "post_hypothesis",
 ]
 
 
@@ -72,6 +73,14 @@ def tool_specs() -> list[dict[str, Any]]:
                         "description": (
                             "Only when the same role already has a live task and a second, genuinely "
                             "different angle is wanted. Without it a duplicate dispatch is refused."
+                        ),
+                    },
+                    "hypothesis_id": {
+                        "type": "integer",
+                        "description": (
+                            "Id returned by post_hypothesis. Binds this task to that board entry so "
+                            "the run records what it believed before acting; the worker also gets "
+                            "the claim and its falsification criterion in its prompt."
                         ),
                     },
                 },
@@ -251,6 +260,37 @@ def tool_specs() -> list[dict[str, Any]]:
                 "required": ["summary"],
             },
         },
+        {
+            "name": "post_hypothesis",
+            "description": (
+                "Write a falsifiable direction on the board and get its id back. Post one "
+                "before dispatching work on it, then pass hypothesis_id to dispatch_task. "
+                "criterion is the observation that would prove it wrong — an entry without "
+                "one is refused. Posting the same idea again merges instead of duplicating, "
+                "and a direction already refuted twice keeps that history."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "family": {
+                        "type": "string",
+                        "enum": [r for r in ROLES if r not in ("verifier", "writer")],
+                        "description": "Which direction this belongs to.",
+                    },
+                    "statement": {"type": "string", "description": "The claim, in one sentence."},
+                    "criterion": {
+                        "type": "string",
+                        "description": "What you would have to observe for this to be wrong.",
+                    },
+                    "evidence": {
+                        "type": "string",
+                        "description": "The observation that made you think of it.",
+                    },
+                    "priority": {"type": "integer", "default": 0},
+                },
+                "required": ["family", "statement", "criterion", "evidence"],
+            },
+        },
     ]
 
 
@@ -269,6 +309,7 @@ class OrchestratorTools:
         context: str = "",
         resume_task_id: int | None = None,
         force: bool = False,
+        hypothesis_id: int | None = None,
     ) -> dict[str, Any]:
         if role not in ROLES:
             return {"error": f"unknown role {role!r}; choose from {list(ROLES)}"}
@@ -385,8 +426,17 @@ class OrchestratorTools:
                     ],
                 }
         warnings = self.run.duplicate_direction_warnings(role, resume_task_id)
-        task = await self.run.dispatch(role, objective, context, resume_task_id=resume_task_id)
+        task = await self.run.dispatch(
+            role, objective, context, resume_task_id=resume_task_id,
+            hypothesis_id=hypothesis_id,
+        )
         out: dict[str, Any] = {"task_id": task.id, "role": task.role, "status": task.status}
+        if hypothesis_id:
+            # Bind after the row exists so the lease names a real task. A
+            # failure here is reported but does not cancel the dispatch: the
+            # worker is already useful without the board entry.
+            bound = self.run.bind_hypothesis(task.id, int(hypothesis_id))
+            out["hypothesis"] = bound
         if warnings:
             out["warnings"] = warnings
         out["clock"] = self.run.clock()
@@ -460,6 +510,29 @@ class OrchestratorTools:
             "inferred",
         )
         return {"unknown_id": fact_id}
+
+    def post_hypothesis(
+        self,
+        family: str,
+        statement: str,
+        criterion: str,
+        evidence: str,
+        priority: int = 0,
+    ) -> dict[str, Any]:
+        """Record a falsifiable direction before dispatching work on it.
+
+        ``family`` must be one of the direction roles. ``criterion`` is what
+        observation would prove the hypothesis wrong — without it the entry is
+        refused, because a direction nobody can falsify is not work.
+        """
+        return self.run.post_hypothesis(
+            family=family,
+            statement=statement,
+            criterion=criterion,
+            evidence=evidence,
+            origin="lead",
+            priority=priority,
+        )
 
     async def propose_flag(
         self, value: str, method: str, source: str = "", confidence: str = "medium"
